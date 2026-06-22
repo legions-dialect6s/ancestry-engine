@@ -81,6 +81,9 @@ export function Hud({
   const shares = expanded ? allShares : allShares.slice(0, COMPOSITION_SHOWN);
   const hidden = allShares.length - Math.min(allShares.length, COMPOSITION_SHOWN);
   const filterActive = selectedRegions.size > 0;
+  // Entity-resolution evidence for the selected ancestor's country: the raw variant
+  // strings that canonicalized into it.
+  const selectedVariants = selected ? (report.placeVariants[selected.modernCountry ?? ''] ?? []) : [];
 
   // Selection model (Finder/Ableton), keyed off the full ordered row list so it's
   // consistent whether the panel is collapsed or expanded.
@@ -128,9 +131,9 @@ export function Hud({
 
       {/* Ancestry readout — composition rows double as the isolate-filter control. */}
       <div style={{ ...panel, top: 18, right: 18, minWidth: 230, maxWidth: 280 }}>
-        <div style={eyebrow}>
-          Composition{filterActive ? ` · isolating ${selectedRegions.size} · esc to clear` : ''}
-        </div>
+        {/* Eyebrow stays constant so selecting a category never reflows the rows below
+            it; the isolate status lives BELOW the list instead (task: no layout shift). */}
+        <div style={eyebrow}>Composition</div>
         <div style={{ maxHeight: '42vh', overflowY: 'auto' }}>
           {shares.map((s) => {
             const sel = selectedRegions.has(s.region);
@@ -144,6 +147,8 @@ export function Hud({
                   color: sel ? theme.accentCyan : theme.text,
                   background: sel ? withAlpha(theme.accentCyan, 0.12) : 'transparent',
                   opacity: filterActive && !sel ? 0.5 : 1,
+                  // Ease the dim/brighten when (de)selecting a category — no sudden snap.
+                  transition: 'opacity 0.18s ease, color 0.18s ease, background-color 0.18s ease',
                 }}
               >
                 <span>{s.region}</span>
@@ -160,6 +165,11 @@ export function Hud({
             </div>
           )}
         </div>
+        {filterActive && (
+          <div style={{ color: theme.accentCyan, fontSize: 10, padding: '6px 4px 0', opacity: 0.85, userSelect: 'none' }}>
+            isolating {selectedRegions.size} · esc / click globe to clear
+          </div>
+        )}
         <div style={{ height: 1, background: theme.panelEdge, margin: '10px 0' }} />
         <Row label="resolved" value={`${resolvedPct.toFixed(1)}%`} dim />
         {/* Honest uncertainty, rendered as a first-class stat rather than hidden. */}
@@ -178,6 +188,11 @@ export function Hud({
           <Row label="modern" value={selected.modernCountry ?? '—'} />
           <Row label="at birth" value={selected.historicalPolity ?? '—'} />
           <Row label="share" value={fmtShare(selected.contributionWeight)} />
+          {selectedVariants.length > 0 && (
+            <div style={{ color: theme.textDim, fontSize: 10, marginTop: 8, wordBreak: 'break-word' }}>
+              <span style={{ color: theme.accentCyan }}>{selected.modernCountry}</span> canonicalized from: {selectedVariants.join(', ')}
+            </div>
+          )}
           <div style={{ color: theme.textDim, fontSize: 10, marginTop: 8, wordBreak: 'break-word' }}>
             {selected.provenance}
           </div>
