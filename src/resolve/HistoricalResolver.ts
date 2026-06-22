@@ -7,6 +7,7 @@ import { unresolved } from './ResolvedPlace';
 import type { Geocoder } from './GeoNamesResolver';
 import type { HistoricalBoundaries } from './HistoricalBasemaps';
 import { ModernBorders, defaultModernBorders } from './ModernBorders';
+import { canonicalizeCountry } from './PlaceCanon';
 
 /** Best-effort modern country from a GEDCOM place hierarchy ("City, County, State,
  *  Country") — the last comma-separated token. Lets a coordinate-resolved place still
@@ -50,16 +51,19 @@ export class HistoricalResolver implements Resolver {
       return miss;
     }
 
+    const canon = canonicalizeCountry(hit.modernCountry);
     const out: ResolvedPlace = {
       raw: placeRaw,
       coords: { lat: hit.lat, lng: hit.lng },
-      modernCountry: hit.modernCountry,
+      modernCountry: canon.canonical,
+      modernCountryRaw: canon.raw,
       historicalPolity: null,
       culturalRegion: null,
       confidence: hit.score,
       borderPrecision: null,
       alternatives: [],
-      provenance: `geonames:"${hit.matchedName}"->(${hit.lat},${hit.lng}) ${hit.countryCode}`,
+      provenance: `geonames:"${hit.matchedName}"->(${hit.lat},${hit.lng}) ${hit.countryCode}`
+        + (canon.changed ? `; canon:"${canon.raw}"->"${canon.canonical}"` : ''),
     };
 
     if (year != null) {
@@ -71,11 +75,11 @@ export class HistoricalResolver implements Resolver {
         out.confidence = hit.score * (polity.borderPrecision / 3);
         out.provenance += `; histbasemaps:${polity.snapshotYear} "${polity.name}" partOf=${polity.partOf ?? '-'} prec=${polity.borderPrecision}`;
       } else {
-        out.historicalPolity = hit.modernCountry; // fallback: no historical polygon
+        out.historicalPolity = out.modernCountry; // fallback: no historical polygon
         out.provenance += `; histbasemaps:no-polygon@${year}(fallback->modern)`;
       }
     } else {
-      out.historicalPolity = hit.modernCountry;
+      out.historicalPolity = out.modernCountry;
       out.provenance += '; no-date(historical=modern)';
     }
 
@@ -86,7 +90,9 @@ export class HistoricalResolver implements Resolver {
   /** Resolve directly from a known point: coordinates are exact, the modern country
    *  comes from the place string, and the historical polity from temporal PiP. */
   private fromCoords(placeRaw: string | null, year: number | null, coords: { lat: number; lng: number }): ResolvedPlace {
-    const modernCountry = countryFromPlace(placeRaw);
+    const canon = canonicalizeCountry(countryFromPlace(placeRaw));
+    const modernCountry = canon.canonical;
+    const canonNote = canon.changed ? `; canon:"${canon.raw}"->"${canon.canonical}"` : '';
 
     // Coordinate sanity: FamilySearch sometimes stamps a garbage point on a correct
     // place string ("…, Scotland" carrying a point in India). If the string names a
@@ -100,12 +106,13 @@ export class HistoricalResolver implements Resolver {
         raw: placeRaw ?? '',
         coords: null,
         modernCountry,
+        modernCountryRaw: canon.raw,
         historicalPolity: modernCountry,
         culturalRegion: null,
         confidence: 0.4,
         borderPrecision: null,
         alternatives: [],
-        provenance: `gedcom-embedded-coords:(${coords.lat},${coords.lng}); coord-rejected:string="${modernCountry}",point-in="${check.pointCountry}"`,
+        provenance: `gedcom-embedded-coords:(${coords.lat},${coords.lng}); coord-rejected:string="${modernCountry}",point-in="${check.pointCountry}"${canonNote}`,
       };
     }
 
@@ -113,12 +120,13 @@ export class HistoricalResolver implements Resolver {
       raw: placeRaw ?? '',
       coords: { lat: coords.lat, lng: coords.lng },
       modernCountry,
+      modernCountryRaw: canon.raw,
       historicalPolity: null,
       culturalRegion: null,
       confidence: 0.95, // exact point; the historical assignment may still be coarse
       borderPrecision: null,
       alternatives: [],
-      provenance: `gedcom-embedded-coords:(${coords.lat},${coords.lng})`,
+      provenance: `gedcom-embedded-coords:(${coords.lat},${coords.lng})${canonNote}`,
     };
 
     if (year != null) {

@@ -10,8 +10,13 @@ export type Confidence = number; // 0..1
 export interface ResolvedPlace {
   raw: string;
   coords: { lat: number; lng: number } | null;
-  /** Present-day country (what a DNA test would label). */
+  /** Present-day country (what a DNA test would label), CANONICALIZED — variants like
+   *  "USA"/"Va"/"Schweiz" are folded to one entity (see PlaceCanon). */
   modernCountry: string | null;
+  /** The raw, pre-canonical country string this resolved from — variant evidence the
+   *  aggregator collects per entity ("canonicalized from: USA, US, Va, …"). Optional;
+   *  resolvers that don't canonicalize simply omit it. */
+  modernCountryRaw?: string | null;
   /** Polity that controlled this point at the event date (e.g. Austria-Hungary). */
   historicalPolity: string | null;
   /** Ethnolinguistic / cultural grouping (historical-basemaps PARTOF), e.g. "Nordic". */
