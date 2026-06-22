@@ -17,6 +17,10 @@ export interface LifeEvent {
   date: GDate | null;
   /** Raw place string, exactly as recorded. Resolution happens in stage 3, not here. */
   place: string | null;
+  /** Coordinates embedded in the GEDCOM (PLAC > MAP > LATI/LONG), when present.
+   *  FamilySearch exports carry these on ~all places; they let the resolver
+   *  short-circuit the gazetteer. Absent in hand-written trees like the demo. */
+  coords?: { lat: number; lng: number } | null;
 }
 
 export interface Individual {

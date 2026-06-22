@@ -10,7 +10,7 @@ import { theme } from './theme';
 // the look-back slider then ranges over whatever depth the loaded tree actually has.
 // Real exports terminate most lines in gaps within a few generations, so the deeper
 // cap stays cheap in practice.
-const GEN_CAP = 15;
+const GEN_CAP = 20;
 
 /** Look-back slider ceiling: the deepest generation present in the tree, floored at 8
  *  so the control stays usable on shallow trees (the sample only reaches gen 3). */

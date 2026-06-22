@@ -27,7 +27,15 @@ export interface ResolvedPlace {
 }
 
 export interface Resolver {
-  resolve(placeRaw: string | null, year: number | null): ResolvedPlace;
+  /** `coords`, when present, are coordinates already attached to the record (e.g.
+   *  embedded in a GEDCOM PLAC>MAP). A resolver MAY use them to resolve from the point
+   *  directly; it remains free to ignore them. Optional, so existing resolvers and
+   *  callers are unaffected. */
+  resolve(
+    placeRaw: string | null,
+    year: number | null,
+    coords?: { lat: number; lng: number } | null,
+  ): ResolvedPlace;
 }
 
 export function unresolved(raw: string | null, provenance: string): ResolvedPlace {

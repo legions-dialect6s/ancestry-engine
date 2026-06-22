@@ -1,5 +1,17 @@
 # ancestry-engine
 
+## What this is
+
+An entity-resolution and ontology engine for adversarially messy real-world data, demonstrated on genealogy — one of the messiest domains there is (free-text place names, historical spellings, borders that move under the data, missing links). It reconstructs canonical real-world entities from place-string variants, treats uncertainty and provenance as first-class, and renders the result as a 3D geoscape. The proving ground is a 31k-record family tree; the model is the product, the globe is one view onto it.
+
+- **Entity resolution** — raw place strings reconciled to canonical places, keeping the variants as evidence.
+- **Provenance on every value** — each resolved place carries how and why it resolved, not just the answer.
+- **Derived properties over the graph** — fractional makeup, contribution weight, and coverage are computed from the pedigree DAG, never denormalized onto records.
+- **Uncertainty as a first-class coverage budget** — `resolved + unresolved + gap = 1`; the unknown is reported, never normalized away.
+- **Swappable resolvers behind stable contracts** — each pipeline stage is a port; implementations deepen without touching the rest.
+
+---
+
 Genealogy-based ancestry analysis with **first-class uncertainty** and **historical place resolution**. Feed it a family tree (GEDCOM); it tells you where your documented ancestors came from — weighted like a DNA breakdown but built from paper records — and it is honest about everything it *can't* account for.
 
 > This is **genealogy, not genetics.** It reads a documented pedigree, so it inherits every brick wall and cannot detect a break in the biological line. It is not a DNA test and not a "23andMe alternative." What it does that consumer tools don't: it shows you the gaps instead of averaging them away.

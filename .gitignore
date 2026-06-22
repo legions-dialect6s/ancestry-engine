@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.log
+.DS_Store
 
 # Machine-local Claude Code settings (permission allowlist, etc.) — not shared.
 .claude/settings.local.json

@@ -33,16 +33,16 @@ export function aggregate(dag: AncestorDAG, resolver: Resolver): AncestryReport 
 
   // Cache: many ancestors share a birthplace.
   const cache = new Map<string, ResolvedPlace>();
-  const resolve = (place: string | null, year: number | null): ResolvedPlace => {
-    const key = `${place ?? ''}|${year ?? ''}`;
+  const resolve = (place: string | null, year: number | null, coords: { lat: number; lng: number } | null): ResolvedPlace => {
+    const key = `${place ?? ''}|${year ?? ''}|${coords ? `${coords.lat},${coords.lng}` : ''}`;
     let rp = cache.get(key);
-    if (!rp) { rp = resolver.resolve(place, year); cache.set(key, rp); }
+    if (!rp) { rp = resolver.resolve(place, year, coords); cache.set(key, rp); }
     return rp;
   };
 
   for (const node of dag.nodes.values()) {
     const birth = birthEvent(node.person);
-    const rp = resolve(birth?.place ?? null, birth?.date?.year ?? null);
+    const rp = resolve(birth?.place ?? null, birth?.date?.year ?? null, birth?.coords ?? null);
     const isResolved = rp.modernCountry !== null;
 
     // Fractional makeup is attributed at leaves only (a leaf represents its branch).

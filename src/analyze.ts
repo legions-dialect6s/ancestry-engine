@@ -108,7 +108,7 @@ export async function analyze(
   const ancestors: GlobeAncestor[] = [];
   for (const node of dag.nodes.values()) {
     const b = birthEvent(node.person);
-    const rp = resolver.resolve(b?.place ?? null, b?.date?.year ?? null);
+    const rp = resolver.resolve(b?.place ?? null, b?.date?.year ?? null, b?.coords ?? null);
     ancestors.push({
       id: node.id,
       name: displayName(node.person),

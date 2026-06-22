@@ -1,4 +1,5 @@
 # CLAUDE.md — ancestry-engine
+Read VISION.md first.
 
 Genealogy-based ancestry analysis with first-class uncertainty and historical place resolution. Reads a GEDCOM, tells you where your *documented* ancestors came from (weighted like a DNA breakdown but from paper records), and is honest about what it can't account for.
 

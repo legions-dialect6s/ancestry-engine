@@ -5,6 +5,19 @@ import type { GlobeAncestor } from '../analyze';
 
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
+/** Round weights (summing to ~1) to tenths of a percent that sum to EXACTLY 100.0 —
+ *  largest-remainder, so the coverage buckets never read "100.1%". Presentation only;
+ *  the underlying weights are untouched. */
+function toHundredPct(weights: number[]): number[] {
+  const total = weights.reduce((s, w) => s + w, 0) || 1;
+  const tenths = weights.map((w) => (w / total) * 1000);
+  const floors = tenths.map(Math.floor);
+  let left = 1000 - floors.reduce((s, f) => s + f, 0);
+  const byFrac = tenths.map((t, i) => ({ i, frac: t - Math.floor(t) })).sort((a, b) => b.frac - a.frac);
+  for (let k = 0; left > 0 && byFrac.length; k++, left--) floors[byFrac[k % byFrac.length]!.i]! += 1;
+  return floors.map((f) => f / 10);
+}
+
 const panel: CSSProperties = {
   position: 'absolute',
   background: theme.panel,
@@ -38,6 +51,10 @@ interface Props {
 export function Hud({ report, selected, maxDepth, maxGen, onMaxDepth, onUpload }: Props) {
   const c = report.coverage;
   const unknown = c.unresolvedWeight + c.gapWeight;
+  // Display the two coverage buckets so they read as exactly 100% together.
+  const coveragePct = toHundredPct([c.resolvedWeight, unknown]);
+  const resolvedPct = coveragePct[0] ?? 0;
+  const unknownPct = coveragePct[1] ?? 0;
   const shares = (report.breakdown.fractional.modernCountry ?? []).slice(0, 6);
 
   const onFile = (e: ChangeEvent<HTMLInputElement>) => {
@@ -65,11 +82,11 @@ export function Hud({ report, selected, maxDepth, maxGen, onMaxDepth, onUpload }
           <Row key={s.region} label={s.region} value={pct(s.value)} />
         ))}
         <div style={{ height: 1, background: theme.panelEdge, margin: '10px 0' }} />
-        <Row label="resolved" value={pct(c.resolvedWeight)} dim />
+        <Row label="resolved" value={`${resolvedPct.toFixed(1)}%`} dim />
         {/* Honest uncertainty, rendered as a first-class stat rather than hidden. */}
         <div style={{ display: 'flex', justifyContent: 'space-between', color: theme.warn, fontSize: 15, marginTop: 4 }}>
           <span style={{ fontFamily: theme.fontLabel, letterSpacing: '0.12em' }}>UNKNOWN</span>
-          <span>{pct(unknown)}</span>
+          <span>{unknownPct.toFixed(1)}%</span>
         </div>
       </div>
 

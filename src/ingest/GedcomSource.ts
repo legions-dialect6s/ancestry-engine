@@ -24,6 +24,22 @@ function parseGDate(value: string): GDate {
   };
 }
 
+/** Parse a GEDCOM MAP coordinate: a plain signed decimal ("45.5236", "-122.675") or
+ *  the spec's hemisphere-prefixed form ("N45.5236", "W122.675"). */
+function parseCoord(value: string): number | null {
+  const m = value.trim().match(/^([NSEW])?\s*(-?\d+(?:\.\d+)?)$/i);
+  if (!m) return null;
+  const n = parseFloat(m[2]!);
+  if (!Number.isFinite(n)) return null;
+  const hemi = m[1]?.toUpperCase();
+  if (hemi === 'S' || hemi === 'W') return -Math.abs(n);
+  if (hemi === 'N' || hemi === 'E') return Math.abs(n);
+  return n;
+}
+
+const validCoord = (lat: number, lng: number) =>
+  Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+
 function parseName(value: string): { given: string | null; surname: string | null } {
   const m = value.match(/^(.*?)\/(.*?)\//);
   if (m) return { given: (m[1] ?? '').trim() || null, surname: (m[2] ?? '').trim() || null };
@@ -112,9 +128,25 @@ export class GedcomSource implements Source {
         continue;
       }
 
-      if (ln.level === 2 && curEvent) {
-        if (ln.tag === 'DATE') curEvent.date = parseGDate(ln.value);
-        else if (ln.tag === 'PLAC') curEvent.place = ln.value || null;
+      // Event sub-structure: DATE/PLAC at level 2, then MAP > LATI/LONG nested below
+      // the place at level 4. curEvent persists across these deeper levels.
+      if (curEvent) {
+        if (ln.level === 2 && ln.tag === 'DATE') curEvent.date = parseGDate(ln.value);
+        else if (ln.level === 2 && ln.tag === 'PLAC') curEvent.place = ln.value || null;
+        else if (ln.level === 4 && ln.tag === 'LATI') {
+          const lat = parseCoord(ln.value);
+          if (lat !== null) curEvent.coords = { lat, lng: curEvent.coords?.lng ?? NaN };
+        } else if (ln.level === 4 && ln.tag === 'LONG') {
+          const lng = parseCoord(ln.value);
+          if (lng !== null) curEvent.coords = { lat: curEvent.coords?.lat ?? NaN, lng };
+        }
+      }
+    }
+
+    // Drop partial or out-of-range embedded coordinates (need both axes, in range).
+    for (const ind of individuals.values()) {
+      for (const ev of ind.events) {
+        if (ev.coords && !validCoord(ev.coords.lat, ev.coords.lng)) ev.coords = null;
       }
     }
 
