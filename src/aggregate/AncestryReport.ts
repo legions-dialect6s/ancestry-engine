@@ -29,4 +29,8 @@ export interface AncestryReport {
   /** scheme -> granularity -> ranked shares. Fractional shares are "of you", so they
    *  intentionally do NOT sum to 1 — the remainder is the uncertainty in `coverage`. */
   breakdown: Record<Scheme, Partial<Record<Granularity, RegionShare[]>>>;
+  /** Entity-resolution evidence: canonical modern country -> the distinct raw variant
+   *  strings that folded into it (e.g. "United States" <- ["US","USA","Va",…]). Empty
+   *  for entities where no folding happened. The "variants -> entities" proof. */
+  placeVariants: Record<string, string[]>;
 }

@@ -31,6 +31,10 @@ export function aggregate(dag: AncestorDAG, resolver: Resolver): AncestryReport 
   let unresolvedWeight = 0;
   const gapWeight = dag.gaps.reduce((s, g) => s + g.contributionWeight, 0);
 
+  // Entity-resolution evidence: canonical modern country -> distinct raw variants that
+  // folded into it. Only records actual folds (raw != canonical).
+  const variants = new Map<string, Set<string>>();
+
   // Cache: many ancestors share a birthplace.
   const cache = new Map<string, ResolvedPlace>();
   const resolve = (place: string | null, year: number | null, coords: { lat: number; lng: number } | null): ResolvedPlace => {
@@ -64,8 +68,17 @@ export function aggregate(dag: AncestorDAG, resolver: Resolver): AncestryReport 
         const r = regionOf(rp, g);
         if (r) head[g].set(r, (head[g].get(r) ?? 0) + 1);
       }
+      // Record the variant if a real fold happened (raw differs from canonical).
+      if (rp.modernCountry && rp.modernCountryRaw && rp.modernCountryRaw !== rp.modernCountry) {
+        let set = variants.get(rp.modernCountry);
+        if (!set) { set = new Set(); variants.set(rp.modernCountry, set); }
+        set.add(rp.modernCountryRaw);
+      }
     }
   }
+
+  const placeVariants: Record<string, string[]> = {};
+  for (const [region, set] of variants) placeVariants[region] = [...set].sort();
 
   const breakdown: AncestryReport['breakdown'] = { fractional: {}, headcount: {} };
   for (const g of GRANULARITIES) {
@@ -79,5 +92,6 @@ export function aggregate(dag: AncestorDAG, resolver: Resolver): AncestryReport 
     generatedAt: new Date().toISOString(),
     coverage: { resolvedWeight, unresolvedWeight, gapWeight },
     breakdown,
+    placeVariants,
   };
 }
