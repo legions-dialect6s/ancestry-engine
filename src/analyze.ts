@@ -11,6 +11,7 @@ import { HistoricalBasemaps, SAMPLE_BOUNDARIES } from './resolve/HistoricalBasem
 import { HistoricalResolver } from './resolve/HistoricalResolver';
 import type { Resolver } from './resolve/ResolvedPlace';
 import type { AncestryReport } from './aggregate/AncestryReport';
+import type { GapNode } from './pedigree/AncestorDAG';
 import { birthEvent, displayName } from './model/types';
 import type { ParsedTree } from './ingest/Source';
 
@@ -41,6 +42,10 @@ export interface AnalysisResult {
   report: AncestryReport;
   ancestors: GlobeAncestor[];
   links: GlobeLink[];
+  /** Missing-parent slots carrying weight — first-class, never silently dropped. */
+  gaps: GapNode[];
+  /** Raw size of the parsed tree, before pedigree expansion from the root. */
+  treeSize: { individuals: number; families: number };
 }
 
 /** Default real resolver wired with the sample datasets. Swap the sample data for a
@@ -49,11 +54,44 @@ export function defaultResolver(): Resolver {
   return new HistoricalResolver(new GeoNamesResolver(SAMPLE_GAZETTEER), new HistoricalBasemaps(SAMPLE_BOUNDARIES));
 }
 
+/** Pick the focal descendant: the individual whose ancestry (walking FAMC links
+ *  upward) reaches the most distinct people. A real Ancestry export rarely puts the
+ *  home person at @I1@, so choosing by id finds some random ancestor with no parents
+ *  of their own and the whole pipeline comes back empty. The largest pedigree belongs
+ *  to the most-recent descendant — that's who we want. Each person's ancestor SET is
+ *  memoized (distinct counts must dedupe shared ancestors from pedigree collapse), so
+ *  a wide tree is walked once rather than once per candidate descendant. */
 function pickRoot(tree: ParsedTree): string {
-  if (tree.individuals.has('@I1@')) return '@I1@';
-  const first = tree.individuals.keys().next().value;
-  if (!first) throw new Error('No individuals in tree');
-  return first;
+  if (tree.individuals.size === 0) throw new Error('No individuals in tree');
+
+  const memo = new Map<string, Set<string>>();
+  const inProgress = new Set<string>(); // breaks directed cycles in malformed data
+
+  const ancestorsOf = (id: string): Set<string> => {
+    const cached = memo.get(id);
+    if (cached) return cached;
+    if (inProgress.has(id)) return new Set();
+    inProgress.add(id);
+    const acc = new Set<string>();
+    const famId = tree.individuals.get(id)?.famc[0];
+    const fam = famId ? tree.families.get(famId) : undefined;
+    for (const parentId of [fam?.husband, fam?.wife]) {
+      if (!parentId || !tree.individuals.has(parentId)) continue;
+      acc.add(parentId);
+      for (const a of ancestorsOf(parentId)) acc.add(a);
+    }
+    inProgress.delete(id);
+    memo.set(id, acc);
+    return acc;
+  };
+
+  let bestId: string | undefined;
+  let bestCount = -1;
+  for (const id of tree.individuals.keys()) {
+    const count = ancestorsOf(id).size;
+    if (count > bestCount) { bestCount = count; bestId = id; } // strict >: first on ties
+  }
+  return bestId!;
 }
 
 export async function analyze(
@@ -97,5 +135,13 @@ export async function analyze(
     if (p.mother) links.push({ childId, parentId: p.mother });
   }
 
-  return { rootId, maxGenerations, report, ancestors, links };
+  return {
+    rootId,
+    maxGenerations,
+    report,
+    ancestors,
+    links,
+    gaps: dag.gaps,
+    treeSize: { individuals: tree.individuals.size, families: tree.families.size },
+  };
 }

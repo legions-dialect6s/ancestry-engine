@@ -16,7 +16,10 @@ function assert(cond: boolean, msg: string) {
 
 const r = await analyze(text);
 
-assert(r.ancestors.length === 13, `13 ancestors (got ${r.ancestors.length})`);
+// pickRoot() (no rootId given) must choose the focal descendant by ancestor count,
+// not @I1@ by id — and that choice must still yield the full sample pedigree.
+assert(r.rootId === '@I1@', `auto-picked root is the focal descendant (got ${r.rootId})`);
+assert(r.ancestors.length === 13, `auto-picked root yields full pedigree: 13 ancestors (got ${r.ancestors.length})`);
 const placedCount = placed(r.ancestors).length;
 assert(placedCount === 12, `12 placed; Hinterland unplaced (got ${placedCount})`);
 

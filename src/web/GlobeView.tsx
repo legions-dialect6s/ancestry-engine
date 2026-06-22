@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, type ComponentType } from 'react';
+import { useRef, useEffect, useMemo, useState, type ComponentType } from 'react';
 import Globe from 'react-globe.gl';
 import { theme, withAlpha } from './theme';
 import type { PointDatum, ArcDatum } from './globeData';
@@ -28,6 +28,31 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
   // Custom dark globe material, memoized so it survives re-renders.
   const globeMaterial = useMemo(() => makeGlobeMaterial(), []);
 
+  // Viewport-driven canvas size. The old code read window.inner* once at mount and
+  // never updated, so resizing (Safari especially, on toolbar show/hide and rotation)
+  // left a clipped canvas. react-globe.gl (three-render-objects) resizes the renderer,
+  // post-processing composer, and camera when these props change, so we just keep them
+  // synced to the window — debounced so a drag-resize doesn't thrash the renderer.
+  const [size, setSize] = useState(() => ({
+    w: typeof window !== 'undefined' ? window.innerWidth : 800,
+    h: typeof window !== 'undefined' ? window.innerHeight : 600,
+  }));
+
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const onResize = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => setSize({ w: window.innerWidth, h: window.innerHeight }), 150);
+    };
+    window.addEventListener('resize', onResize);
+    window.visualViewport?.addEventListener('resize', onResize);
+    return () => {
+      if (t) clearTimeout(t);
+      window.removeEventListener('resize', onResize);
+      window.visualViewport?.removeEventListener('resize', onResize);
+    };
+  }, []);
+
   useEffect(() => {
     const g = ref.current;
     if (!g) return;
@@ -51,7 +76,44 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
 
     const bloom = attachBloom(globe, window.innerWidth, window.innerHeight);
 
+    // Ambient auto-rotate that yields to the user. The constant spin makes markers
+    // impossible to hover/click, so any interaction (drag, wheel, pointerdown) or
+    // simply hovering the globe pauses rotation; it resumes ~4s after the pointer
+    // goes idle AND has left, so the globe never spins out from under the cursor.
+    const canvas: HTMLCanvasElement = g.renderer().domElement;
+    const IDLE_MS = 4000;
+    let hovering = false;
+    let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const stop = () => {
+      controls.autoRotate = false;
+      if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = undefined; }
+    };
+    const armResume = () => {
+      if (resumeTimer) clearTimeout(resumeTimer);
+      resumeTimer = setTimeout(() => {
+        resumeTimer = undefined;
+        if (!hovering) controls.autoRotate = true;
+      }, IDLE_MS);
+    };
+    const onMove = () => { hovering = true; stop(); };
+    const onLeave = () => { hovering = false; armResume(); };
+
+    canvas.addEventListener('pointermove', onMove);
+    canvas.addEventListener('pointerleave', onLeave);
+    canvas.addEventListener('pointerdown', stop);
+    canvas.addEventListener('wheel', stop, { passive: true });
+    controls.addEventListener('start', stop); // OrbitControls: drag/zoom begins
+    controls.addEventListener('end', armResume); // drag/zoom ends -> idle countdown
+
     return () => {
+      canvas.removeEventListener('pointermove', onMove);
+      canvas.removeEventListener('pointerleave', onLeave);
+      canvas.removeEventListener('pointerdown', stop);
+      canvas.removeEventListener('wheel', stop);
+      controls.removeEventListener('start', stop);
+      controls.removeEventListener('end', armResume);
+      if (resumeTimer) clearTimeout(resumeTimer);
       scene.remove(graticule);
       scene.remove(atmosphere);
       disposeObject(graticule);
@@ -63,9 +125,11 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
   return (
     <GlobeAny
       ref={ref}
-      width={typeof window !== 'undefined' ? window.innerWidth : 800}
-      height={typeof window !== 'undefined' ? window.innerHeight : 600}
-      backgroundColor="rgba(0,0,0,0)"
+      width={size.w}
+      height={size.h}
+      // Opaque void so the canvas itself fills the viewport (the renderer clears to
+      // theme.bg); the parent also paints theme.bg, so a resize never flashes a gap.
+      backgroundColor={theme.bg}
       // Craft: no bitmap — a custom dark globe ShaderMaterial (see globeCraft.ts)
       // carries a cyan Fresnel limb; the graticule, Fresnel atmosphere shell, and
       // UnrealBloomPass are added to the scene/composer in the effect above.
@@ -99,7 +163,7 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
       arcColor={() => [`${theme.accentAmber}00`, `${theme.accentAmber}cc`]}
       arcStroke={0.4}
       arcDashLength={0.4}
-      arcDashGap={0.25}
+      arcDashGap={0.1}
       arcDashAnimateTime={4500}
       // TODO(craft): hexBin density heatmap layer keyed on weight, toggled in the HUD.
     />

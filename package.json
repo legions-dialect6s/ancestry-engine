@@ -6,6 +6,7 @@
   "description": "Genealogy-based ancestry analysis with first-class uncertainty and historical place resolution.",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "analyze:file": "tsx scripts/analyze-file.ts",
     "smoke": "tsx scripts/smoke.ts",
     "dev:web": "vite",
     "build:web": "vite build",

@@ -30,11 +30,12 @@ interface Props {
   report: AncestryReport;
   selected: GlobeAncestor | null;
   maxDepth: number;
+  maxGen: number;
   onMaxDepth: (d: number) => void;
   onUpload: (gedcomText: string) => void;
 }
 
-export function Hud({ report, selected, maxDepth, onMaxDepth, onUpload }: Props) {
+export function Hud({ report, selected, maxDepth, maxGen, onMaxDepth, onUpload }: Props) {
   const c = report.coverage;
   const unknown = c.unresolvedWeight + c.gapWeight;
   const shares = (report.breakdown.fractional.modernCountry ?? []).slice(0, 6);
@@ -89,9 +90,9 @@ export function Hud({ report, selected, maxDepth, onMaxDepth, onUpload }: Props)
 
       {/* Controls — bottom left */}
       <div style={{ ...panel, bottom: 18, left: 18, width: 280 }}>
-        <div style={eyebrow}>Look back · {maxDepth} generations</div>
+        <div style={eyebrow}>Look back · {maxDepth} of {maxGen} generations</div>
         <input
-          type="range" min={0} max={8} value={maxDepth}
+          type="range" min={0} max={maxGen} value={maxDepth}
           onChange={(e) => onMaxDepth(Number(e.target.value))}
           style={{ width: '100%', accentColor: theme.accentCyan }}
         />
