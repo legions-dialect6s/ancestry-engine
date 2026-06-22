@@ -1,6 +1,6 @@
 import { useRef, useEffect, useMemo, useState, type ComponentType } from 'react';
 import Globe from 'react-globe.gl';
-import { theme, withAlpha } from './theme';
+import { theme, withAlpha, mix } from './theme';
 import type { PointDatum, ArcDatum } from './globeData';
 import { WORLD_COUNTRIES } from './worldData';
 import {
@@ -19,7 +19,27 @@ const GlobeAny = Globe as unknown as ComponentType<any>;
 interface Props {
   points: PointDatum[];
   arcs: ArcDatum[];
-  onSelect: (id: string) => void;
+  /** A marker id selects; null clears (empty-space click). */
+  onSelect: (id: string | null) => void;
+}
+
+// Arc grading. Long migrations glow warm amber — the hero "crossing" color — while
+// shorter arcs grade by depth (recent warm -> deep cool), so the ocean sweeps pop
+// warm against the cooler local web. Brightness is keyed to SALIENCE, not depth: a
+// long-haul migration is drawn bright even when it's deep and low-weight, so the
+// striking transoceanic arcs don't fade out. Short arcs brighten with weight.
+const ARC_DEPTH_REF = 12; // hue is fully cool by this generation
+const ARC_BRIGHT_WEIGHT = 0.2; // weight at which a short arc reaches full opacity
+const ARC_LONGHAUL_OPACITY = 0.6; // brightness floor for migration arcs
+
+function arcEndpointColors(d: ArcDatum): [string, string] {
+  const hue = d.longHaul
+    ? theme.accentAmber
+    : mix(theme.accentAmber, theme.accentCyan, Math.min(1, d.depth / ARC_DEPTH_REF));
+  let opacity = 0.3 + 0.6 * Math.min(1, Math.sqrt(d.weight / ARC_BRIGHT_WEIGHT));
+  if (d.longHaul) opacity = Math.max(opacity, ARC_LONGHAUL_OPACITY);
+  // Dashed gradient: transparent at the child end, graded color at the parent end.
+  return [withAlpha(hue, 0), withAlpha(hue, opacity)];
 }
 
 export function GlobeView({ points, arcs, onSelect }: Props) {
@@ -130,6 +150,13 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
       // Opaque void so the canvas itself fills the viewport (the renderer clears to
       // theme.bg); the parent also paints theme.bg, so a resize never flashes a gap.
       backgroundColor={theme.bg}
+      // Click-to-select prioritizes markers: only points and the globe sphere take
+      // pointer events, so arcs/borders drawn over a marker never intercept the click
+      // (the hover raycast skips them and lands on the point behind). Clicking the bare
+      // globe clears the selection.
+      pointerEventsFilter={(obj: { __globeObjType?: string }) =>
+        obj?.__globeObjType === 'point' || obj?.__globeObjType === 'globe'}
+      onGlobeClick={() => onSelect(null)}
       // Craft: no bitmap — a custom dark globe ShaderMaterial (see globeCraft.ts)
       // carries a cyan Fresnel limb; the graticule, Fresnel atmosphere shell, and
       // UnrealBloomPass are added to the scene/composer in the effect above.
@@ -154,14 +181,15 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
       pointColor={(d: PointDatum) => (d.isLeaf ? theme.accentAmber : theme.accentCyan)}
       pointLabel={(d: PointDatum) => d.label}
       onPointClick={(d: PointDatum) => onSelect(d.id)}
-      // Migration arcs child -> parent.
+      // Migration arcs child -> parent, graded by generation depth + weight.
       arcsData={arcs}
       arcStartLat="startLat"
       arcStartLng="startLng"
       arcEndLat="endLat"
       arcEndLng="endLng"
-      arcColor={() => [`${theme.accentAmber}00`, `${theme.accentAmber}cc`]}
-      arcStroke={0.4}
+      arcColor={arcEndpointColors}
+      // Long migrations are drawn a touch bolder so they read as the hero connections.
+      arcStroke={(d: ArcDatum) => (d.longHaul ? 0.55 : 0.35)}
       arcDashLength={0.4}
       arcDashGap={0.1}
       arcDashAnimateTime={4500}

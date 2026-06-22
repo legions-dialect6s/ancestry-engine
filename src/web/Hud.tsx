@@ -3,7 +3,19 @@ import { theme, panelClip } from './theme';
 import type { AncestryReport } from '../aggregate/AncestryReport';
 import type { GlobeAncestor } from '../analyze';
 
-const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+/** Format a fractional share with enough precision that small real lines stay legible
+ *  instead of collapsing to "0.0%" — extra decimals below 0.1%, a floor of "<0.01%". */
+function fmtShare(x: number): string {
+  const p = x * 100;
+  if (p <= 0) return '0%';
+  if (p < 0.01) return '<0.01%';
+  if (p < 0.1) return `${p.toFixed(2)}%`;
+  return `${p.toFixed(1)}%`;
+}
+
+// Show a deep enough slice of the composition that smaller real lines (Romania,
+// Austria…) are reachable; the list scrolls when it overflows the panel.
+const COMPOSITION_SHOWN = 20;
 
 /** Round weights (summing to ~1) to tenths of a percent that sum to EXACTLY 100.0 —
  *  largest-remainder, so the coverage buckets never read "100.1%". Presentation only;
@@ -55,7 +67,8 @@ export function Hud({ report, selected, maxDepth, maxGen, onMaxDepth, onUpload }
   const coveragePct = toHundredPct([c.resolvedWeight, unknown]);
   const resolvedPct = coveragePct[0] ?? 0;
   const unknownPct = coveragePct[1] ?? 0;
-  const shares = (report.breakdown.fractional.modernCountry ?? []).slice(0, 6);
+  const allShares = report.breakdown.fractional.modernCountry ?? [];
+  const shares = allShares.slice(0, COMPOSITION_SHOWN);
 
   const onFile = (e: ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -76,11 +89,18 @@ export function Hud({ report, selected, maxDepth, maxGen, onMaxDepth, onUpload }
       </div>
 
       {/* Ancestry readout — the corner stat panel (the always-visible signature). */}
-      <div style={{ ...panel, top: 18, right: 18, minWidth: 230 }}>
+      <div style={{ ...panel, top: 18, right: 18, minWidth: 230, maxWidth: 280 }}>
         <div style={eyebrow}>Composition</div>
-        {shares.map((s) => (
-          <Row key={s.region} label={s.region} value={pct(s.value)} />
-        ))}
+        <div style={{ maxHeight: '42vh', overflowY: 'auto' }}>
+          {shares.map((s) => (
+            <Row key={s.region} label={s.region} value={fmtShare(s.value)} />
+          ))}
+          {allShares.length > shares.length && (
+            <div style={{ color: theme.textDim, fontSize: 10, padding: '4px 0' }}>
+              +{allShares.length - shares.length} smaller lines
+            </div>
+          )}
+        </div>
         <div style={{ height: 1, background: theme.panelEdge, margin: '10px 0' }} />
         <Row label="resolved" value={`${resolvedPct.toFixed(1)}%`} dim />
         {/* Honest uncertainty, rendered as a first-class stat rather than hidden. */}
@@ -98,7 +118,7 @@ export function Hud({ report, selected, maxDepth, maxGen, onMaxDepth, onUpload }
           <Row label="born" value={`${selected.birthPlace ?? '?'}${selected.birthYear ? ` (${selected.birthYear})` : ''}`} />
           <Row label="modern" value={selected.modernCountry ?? '—'} />
           <Row label="at birth" value={selected.historicalPolity ?? '—'} />
-          <Row label="share" value={pct(selected.contributionWeight)} />
+          <Row label="share" value={fmtShare(selected.contributionWeight)} />
           <div style={{ color: theme.textDim, fontSize: 10, marginTop: 8, wordBreak: 'break-word' }}>
             {selected.provenance}
           </div>

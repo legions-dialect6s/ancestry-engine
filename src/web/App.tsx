@@ -34,6 +34,13 @@ export function App() {
   // Each freshly loaded tree starts by showing all generations.
   useEffect(() => { if (result) setMaxDepth(sliderMaxGen(result)); }, [result]);
 
+  // Esc dismisses the selected-ancestor card (empty-space click clears it via GlobeView).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelectedId(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const layers = useMemo(
     () => (result ? buildLayers(result.ancestors, result.links, maxDepth) : null),
     [result, maxDepth],

@@ -6,6 +6,7 @@ import type { Resolver, ResolvedPlace } from './ResolvedPlace';
 import { unresolved } from './ResolvedPlace';
 import type { Geocoder } from './GeoNamesResolver';
 import type { HistoricalBoundaries } from './HistoricalBasemaps';
+import { ModernBorders, defaultModernBorders } from './ModernBorders';
 
 /** Best-effort modern country from a GEDCOM place hierarchy ("City, County, State,
  *  Country") — the last comma-separated token. Lets a coordinate-resolved place still
@@ -19,7 +20,11 @@ function countryFromPlace(placeRaw: string | null): string | null {
 export class HistoricalResolver implements Resolver {
   private cache = new Map<string, ResolvedPlace>();
 
-  constructor(private readonly geocoder: Geocoder, private readonly boundaries: HistoricalBoundaries) {}
+  constructor(
+    private readonly geocoder: Geocoder,
+    private readonly boundaries: HistoricalBoundaries,
+    private readonly borders: ModernBorders = defaultModernBorders,
+  ) {}
 
   resolve(placeRaw: string | null, year: number | null, coords?: { lat: number; lng: number } | null): ResolvedPlace {
     // Embedded coordinate (FamilySearch attaches one to ~every place): resolve from
@@ -81,10 +86,33 @@ export class HistoricalResolver implements Resolver {
   /** Resolve directly from a known point: coordinates are exact, the modern country
    *  comes from the place string, and the historical polity from temporal PiP. */
   private fromCoords(placeRaw: string | null, year: number | null, coords: { lat: number; lng: number }): ResolvedPlace {
+    const modernCountry = countryFromPlace(placeRaw);
+
+    // Coordinate sanity: FamilySearch sometimes stamps a garbage point on a correct
+    // place string ("…, Scotland" carrying a point in India). If the string names a
+    // known modern country and the point clearly falls in a different one, distrust
+    // the point: keep the country from the string (composition stays right) but drop
+    // the coordinate (no wrong dot). Conservative — historical/unmatched country names,
+    // ambiguous/ocean points, and shared-territory pairs are left trusted.
+    const check = this.borders.contradicts(modernCountry, coords.lat, coords.lng);
+    if (check.contradicts) {
+      return {
+        raw: placeRaw ?? '',
+        coords: null,
+        modernCountry,
+        historicalPolity: modernCountry,
+        culturalRegion: null,
+        confidence: 0.4,
+        borderPrecision: null,
+        alternatives: [],
+        provenance: `gedcom-embedded-coords:(${coords.lat},${coords.lng}); coord-rejected:string="${modernCountry}",point-in="${check.pointCountry}"`,
+      };
+    }
+
     const out: ResolvedPlace = {
       raw: placeRaw ?? '',
       coords: { lat: coords.lat, lng: coords.lng },
-      modernCountry: countryFromPlace(placeRaw),
+      modernCountry,
       historicalPolity: null,
       culturalRegion: null,
       confidence: 0.95, // exact point; the historical assignment may still be coarse
