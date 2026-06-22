@@ -12,6 +12,10 @@ import { theme } from './theme';
 // cap stays cheap in practice.
 const GEN_CAP = 20;
 
+// Dragging the slider rebuilds every globe layer; debounce the heavy recompute so a
+// drag doesn't thrash — the thumb/label stay live, layers settle when you stop.
+const SLIDER_DEBOUNCE_MS = 110;
+
 /** Look-back slider ceiling: the deepest generation present in the tree, floored at 8
  *  so the control stays usable on shallow trees (the sample only reaches gen 3). */
 function sliderMaxGen(r: AnalysisResult): number {
@@ -21,9 +25,18 @@ function sliderMaxGen(r: AnalysisResult): number {
 
 export function App() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [maxDepth, setMaxDepth] = useState(8);
+  const [maxDepth, setMaxDepth] = useState(8); // live slider value (label + thumb)
+  const [renderDepth, setRenderDepth] = useState(8); // debounced -> drives layer rebuild
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Isolate filter: a Set of region keys (modern countries) chosen from composition
+  // rows. Empty = no filter. anchor is the last plain-clicked row, for shift-range.
+  // A Set (not a single value) so a future "group" row can expand to many keys.
+  const [regions, setRegions] = useState<Set<string>>(new Set());
+  const [anchor, setAnchor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const onRegionsChange = (next: Set<string>, a: string | null) => { setRegions(next); setAnchor(a); };
+  const clearAll = () => { setSelectedId(null); setRegions(new Set()); setAnchor(null); };
 
   useEffect(() => {
     analyze(sampleGed, { maxGenerations: GEN_CAP }).then(setResult).catch((e) => setError(String(e)));
@@ -31,19 +44,35 @@ export function App() {
 
   const genMax = useMemo(() => (result ? sliderMaxGen(result) : 8), [result]);
 
-  // Each freshly loaded tree starts by showing all generations.
-  useEffect(() => { if (result) setMaxDepth(sliderMaxGen(result)); }, [result]);
-
-  // Esc dismisses the selected-ancestor card (empty-space click clears it via GlobeView).
+  // Each freshly loaded tree starts by showing all generations, with no isolate filter.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelectedId(null); };
+    if (!result) return;
+    const all = sliderMaxGen(result);
+    setMaxDepth(all);
+    setRenderDepth(all);
+    setRegions(new Set());
+    setAnchor(null);
+  }, [result]);
+
+  // Debounce: rebuild layers only once the slider value settles.
+  useEffect(() => {
+    const t = setTimeout(() => setRenderDepth(maxDepth), SLIDER_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [maxDepth]);
+
+  // Esc clears the selected-ancestor card AND any isolate filter (empty-space click
+  // on the globe does the same via GlobeView's onClear).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setSelectedId(null); setRegions(new Set()); setAnchor(null); }
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   const layers = useMemo(
-    () => (result ? buildLayers(result.ancestors, result.links, maxDepth) : null),
-    [result, maxDepth],
+    () => (result ? buildLayers(result.ancestors, result.links, renderDepth) : null),
+    [result, renderDepth],
   );
 
   const selected = result?.ancestors.find((a) => a.id === selectedId) ?? null;
@@ -58,8 +87,24 @@ export function App() {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: theme.bg, overflow: 'hidden' }}>
-      <GlobeView points={layers.points} arcs={layers.arcs} onSelect={setSelectedId} />
-      <Hud report={result.report} selected={selected} maxDepth={maxDepth} maxGen={genMax} onMaxDepth={setMaxDepth} onUpload={loadText} />
+      <GlobeView
+        points={layers.points}
+        arcs={layers.arcs}
+        selectedRegions={regions}
+        onSelect={setSelectedId}
+        onClear={clearAll}
+      />
+      <Hud
+        report={result.report}
+        selected={selected}
+        maxDepth={maxDepth}
+        maxGen={genMax}
+        onMaxDepth={setMaxDepth}
+        onUpload={loadText}
+        selectedRegions={regions}
+        regionAnchor={anchor}
+        onRegionsChange={onRegionsChange}
+      />
     </div>
   );
 }

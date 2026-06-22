@@ -3,7 +3,7 @@
 // state and atmosphere. Condensed sans for labels, mono for data. CC tunes from here.
 
 export const theme = {
-  bg: '#070B12',          // void
+  bg: '#03050B',          // void — deep near-black so the globe + arcs pop
   panel: 'rgba(10,15,26,0.82)',
   panelEdge: '#1E2A3A',
   accentAmber: '#E8A33D',  // primary readout / leaves

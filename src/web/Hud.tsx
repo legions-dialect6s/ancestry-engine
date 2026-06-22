@@ -1,5 +1,5 @@
-import { type CSSProperties, type ChangeEvent } from 'react';
-import { theme, panelClip } from './theme';
+import { useState, type CSSProperties, type ChangeEvent, type MouseEvent } from 'react';
+import { theme, panelClip, withAlpha } from './theme';
 import type { AncestryReport } from '../aggregate/AncestryReport';
 import type { GlobeAncestor } from '../analyze';
 
@@ -13,8 +13,7 @@ function fmtShare(x: number): string {
   return `${p.toFixed(1)}%`;
 }
 
-// Show a deep enough slice of the composition that smaller real lines (Romania,
-// Austria…) are reachable; the list scrolls when it overflows the panel.
+// Collapsed composition shows this many lines; the rest expand inline on click.
 const COMPOSITION_SHOWN = 20;
 
 /** Round weights (summing to ~1) to tenths of a percent that sum to EXACTLY 100.0 —
@@ -58,17 +57,56 @@ interface Props {
   maxGen: number;
   onMaxDepth: (d: number) => void;
   onUpload: (gedcomText: string) => void;
+  /** Isolate filter: selected region keys. Empty = no filter. */
+  selectedRegions: Set<string>;
+  /** Last plain-clicked region (shift-range anchor). */
+  regionAnchor: string | null;
+  onRegionsChange: (next: Set<string>, anchor: string | null) => void;
 }
 
-export function Hud({ report, selected, maxDepth, maxGen, onMaxDepth, onUpload }: Props) {
+export function Hud({
+  report, selected, maxDepth, maxGen, onMaxDepth, onUpload,
+  selectedRegions, regionAnchor, onRegionsChange,
+}: Props) {
+  const [expanded, setExpanded] = useState(false);
+
   const c = report.coverage;
   const unknown = c.unresolvedWeight + c.gapWeight;
   // Display the two coverage buckets so they read as exactly 100% together.
   const coveragePct = toHundredPct([c.resolvedWeight, unknown]);
   const resolvedPct = coveragePct[0] ?? 0;
   const unknownPct = coveragePct[1] ?? 0;
+
   const allShares = report.breakdown.fractional.modernCountry ?? [];
-  const shares = allShares.slice(0, COMPOSITION_SHOWN);
+  const shares = expanded ? allShares : allShares.slice(0, COMPOSITION_SHOWN);
+  const hidden = allShares.length - Math.min(allShares.length, COMPOSITION_SHOWN);
+  const filterActive = selectedRegions.size > 0;
+
+  // Selection model (Finder/Ableton), keyed off the full ordered row list so it's
+  // consistent whether the panel is collapsed or expanded.
+  const onRowClick = (region: string, e: MouseEvent) => {
+    const ordered = allShares.map((s) => s.region);
+    if (e.shiftKey && regionAnchor != null) {
+      const i = ordered.indexOf(regionAnchor);
+      const j = ordered.indexOf(region);
+      if (i >= 0 && j >= 0) {
+        const [lo, hi] = i <= j ? [i, j] : [j, i];
+        const next = new Set<string>();
+        for (let k = lo; k <= hi; k++) next.add(ordered[k]!);
+        onRegionsChange(next, regionAnchor); // anchor stays the plain-clicked row
+        return;
+      }
+    }
+    if (e.metaKey || e.ctrlKey) {
+      const next = new Set(selectedRegions);
+      if (next.has(region)) next.delete(region); else next.add(region);
+      onRegionsChange(next, regionAnchor ?? region);
+      return;
+    }
+    // Plain: select just this row; clicking the lone active selection again clears.
+    if (selectedRegions.size === 1 && selectedRegions.has(region)) onRegionsChange(new Set(), null);
+    else onRegionsChange(new Set([region]), region);
+  };
 
   const onFile = (e: ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -88,16 +126,37 @@ export function Hud({ report, selected, maxDepth, maxGen, onMaxDepth, onUpload }
         </div>
       </div>
 
-      {/* Ancestry readout — the corner stat panel (the always-visible signature). */}
+      {/* Ancestry readout — composition rows double as the isolate-filter control. */}
       <div style={{ ...panel, top: 18, right: 18, minWidth: 230, maxWidth: 280 }}>
-        <div style={eyebrow}>Composition</div>
+        <div style={eyebrow}>
+          Composition{filterActive ? ` · isolating ${selectedRegions.size} · esc to clear` : ''}
+        </div>
         <div style={{ maxHeight: '42vh', overflowY: 'auto' }}>
-          {shares.map((s) => (
-            <Row key={s.region} label={s.region} value={fmtShare(s.value)} />
-          ))}
-          {allShares.length > shares.length && (
-            <div style={{ color: theme.textDim, fontSize: 10, padding: '4px 0' }}>
-              +{allShares.length - shares.length} smaller lines
+          {shares.map((s) => {
+            const sel = selectedRegions.has(s.region);
+            return (
+              <div
+                key={s.region}
+                onClick={(e) => onRowClick(s.region, e)}
+                style={{
+                  display: 'flex', justifyContent: 'space-between', gap: 12,
+                  padding: '2px 4px', borderRadius: 2, cursor: 'pointer', userSelect: 'none',
+                  color: sel ? theme.accentCyan : theme.text,
+                  background: sel ? withAlpha(theme.accentCyan, 0.12) : 'transparent',
+                  opacity: filterActive && !sel ? 0.5 : 1,
+                }}
+              >
+                <span>{s.region}</span>
+                <span style={{ textAlign: 'right' }}>{fmtShare(s.value)}</span>
+              </div>
+            );
+          })}
+          {hidden > 0 && (
+            <div
+              onClick={() => setExpanded((v) => !v)}
+              style={{ color: theme.accentCyan, fontSize: 10, padding: '5px 4px', cursor: 'pointer', userSelect: 'none', opacity: 0.85 }}
+            >
+              {expanded ? '− show fewer' : `+${hidden} smaller lines — show all`}
             </div>
           )}
         </div>

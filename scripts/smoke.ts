@@ -26,6 +26,9 @@ assert(placedCount === 12, `12 placed; Hinterland unplaced (got ${placedCount})`
 const full = buildLayers(r.ancestors, r.links, 8);
 assert(full.points.length === 12, `12 points at depth 8 (got ${full.points.length})`);
 assert(full.arcs.length > 0, `migration arcs exist (got ${full.arcs.length})`);
+// Isolate filter (A2) keys off region carried on the layer data.
+assert(full.points.some((p) => p.region != null), `points carry region for the isolate filter`);
+assert(full.arcs.every((a) => 'region' in a), `arcs carry parent region for the isolate filter`);
 
 const near = filterByDepth(r.ancestors, 1);
 assert(near.length === 3, `depth<=1 keeps self+parents = 3 (got ${near.length})`);

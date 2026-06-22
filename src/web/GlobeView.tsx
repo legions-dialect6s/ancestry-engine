@@ -19,34 +19,100 @@ const GlobeAny = Globe as unknown as ComponentType<any>;
 interface Props {
   points: PointDatum[];
   arcs: ArcDatum[];
-  /** A marker id selects; null clears (empty-space click). */
+  /** Isolate filter: region keys whose ancestors stay lit. Empty = no filter. */
+  selectedRegions: Set<string>;
+  /** A marker id selects (only when no filter is active). */
   onSelect: (id: string | null) => void;
+  /** Empty-space click on the globe — clears selection + filter. */
+  onClear: () => void;
 }
 
-// Arc grading. Long migrations glow warm amber — the hero "crossing" color — while
-// shorter arcs grade by depth (recent warm -> deep cool), so the ocean sweeps pop
-// warm against the cooler local web. Brightness is keyed to SALIENCE, not depth: a
-// long-haul migration is drawn bright even when it's deep and low-weight, so the
-// striking transoceanic arcs don't fade out. Short arcs brighten with weight.
-const ARC_DEPTH_REF = 12; // hue is fully cool by this generation
-const ARC_BRIGHT_WEIGHT = 0.2; // weight at which a short arc reaches full opacity
-const ARC_LONGHAUL_OPACITY = 0.6; // brightness floor for migration arcs
+// Isolate filter: excluded markers keep their zoom brightness multiplied by this, so
+// they dim (not vanish) for context while the selection stays lit. Excluded ARCS are
+// removed entirely (see includedArcs) — "lines not in the category disappear".
+const FILTER_DIM_MARKER = 0.16;
 
-function arcEndpointColors(d: ArcDatum): [string, string] {
+// --- Camera-altitude response ---------------------------------------------------
+// Zoomed OUT (>= ALT_FAR): markers full size + bright, bloom full, arcs full — the
+// striking wide sweep. Zoomed IN (<= ALT_NEAR): markers shrink + dim so a dense
+// cluster resolves into distinguishable dots (visible, not hidden), bloom drops so
+// the close-up isn't a white blowout, and arcs fade out then vanish so local detail
+// is just dots. The altitude signal comes from globe.gl's onZoom callback.
+const ALT_FAR = 2.2; // initial / fully zoomed-out view
+const ALT_NEAR = 0.6; // fully zoomed-in
+const MARKER_FAR_SCALE = 1.0;
+const MARKER_NEAR_SCALE = 0.45;
+const MARKER_FAR_BRIGHT = 1.0;
+const MARKER_NEAR_BRIGHT = 0.55;
+const BLOOM_FAR = 0.38; // matches attachBloom's initial strength
+const BLOOM_NEAR = 0.1;
+// Arcs belong to the WIDE overview only. Full at the default framing (and zoomed out),
+// they fade out the instant you zoom in and are gone entirely below ALT_ARC_HIDE — so
+// the moment you leave the overview to inspect a region (England, mainland Europe) the
+// animated lines are gone and it's just dots.
+const ALT_ARC_HIDE = 2.0; // arcs hidden entirely below this altitude
+const ARC_FULL_ALT = 2.2; // arcs full at/above (the default framing); fade down to ALT_ARC_HIDE
+// Auto-rotation switches off once you've zoomed in past this (gentler than arc-hide).
+const ALT_NO_ROTATE = 1.3;
+
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+/** 1 when zoomed out (far), 0 when zoomed in (near). */
+const zoomT = (alt: number) => clamp01((alt - ALT_NEAR) / (ALT_FAR - ALT_NEAR));
+const bloomStrengthFor = (alt: number) => lerp(BLOOM_NEAR, BLOOM_FAR, zoomT(alt));
+const markerScale = (alt: number) => lerp(MARKER_NEAR_SCALE, MARKER_FAR_SCALE, zoomT(alt));
+const markerBright = (alt: number) => lerp(MARKER_NEAR_BRIGHT, MARKER_FAR_BRIGHT, zoomT(alt));
+/** 1 when arcs are full, ramps to 0 by ALT_ARC_HIDE (below which arcs are hidden). */
+const arcAltFactor = (alt: number) => clamp01((alt - ALT_ARC_HIDE) / (ARC_FULL_ALT - ALT_ARC_HIDE));
+
+const ZOOM_THROTTLE_MS = 110; // marker/arc accessor refresh cadence during a zoom gesture
+const NO_ARCS: ArcDatum[] = []; // stable empty reference for the close-in (arcs hidden) state
+
+// --- Arc grading ----------------------------------------------------------------
+// Long migrations glow warm amber — the hero "crossing" color — while shorter arcs
+// grade by depth (recent warm -> deep cool), so the ocean sweeps pop warm against the
+// cooler local web. Brightness is keyed to SALIENCE, not depth, so deep low-weight
+// migrations stay bright; `altFactor` then fades the whole set as the camera zooms in.
+const ARC_DEPTH_REF = 12;
+const ARC_BRIGHT_WEIGHT = 0.2;
+const ARC_LONGHAUL_OPACITY = 0.6;
+
+function arcEndpointColors(d: ArcDatum, altFactor: number): [string, string] {
   const hue = d.longHaul
     ? theme.accentAmber
     : mix(theme.accentAmber, theme.accentCyan, Math.min(1, d.depth / ARC_DEPTH_REF));
   let opacity = 0.3 + 0.6 * Math.min(1, Math.sqrt(d.weight / ARC_BRIGHT_WEIGHT));
   if (d.longHaul) opacity = Math.max(opacity, ARC_LONGHAUL_OPACITY);
-  // Dashed gradient: transparent at the child end, graded color at the parent end.
+  opacity *= altFactor; // fade out as we zoom in
   return [withAlpha(hue, 0), withAlpha(hue, opacity)];
 }
 
-export function GlobeView({ points, arcs, onSelect }: Props) {
+export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: Props) {
   const ref = useRef<any>(null);
+  const filterActive = selectedRegions.size > 0;
 
   // Custom dark globe material, memoized so it survives re-renders.
   const globeMaterial = useMemo(() => makeGlobeMaterial(), []);
+
+  // Camera altitude drives marker size/brightness and arc visibility. Throttled so a
+  // zoom gesture doesn't rebuild the point geometry every frame; bloom is mutated
+  // directly (cheap) for a smooth response.
+  const [viewAlt, setViewAlt] = useState(ALT_FAR);
+  const altRef = useRef(ALT_FAR);
+  const zoomThrottle = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const bloomRef = useRef<ReturnType<typeof attachBloom>>(null);
+
+  // Auto-rotate master switch (toggled with R). rotateOnRef is read by the existing
+  // interaction logic; rotateOn is just for the on-screen hint.
+  const [rotateOn, setRotateOn] = useState(true);
+  const rotateOnRef = useRef(true);
+
+  // Bridge refs so the zoom callback and the isolate-filter effect can gate the
+  // rotation logic without rewriting it: canAutoRotate() reads filter + altitude; the
+  // effect publishes stop/armResume back out so external state changes can drive them.
+  const filterActiveRef = useRef(false);
+  const stopRotateRef = useRef<(() => void) | null>(null);
+  const armResumeRef = useRef<(() => void) | null>(null);
 
   // Viewport-driven canvas size. The old code read window.inner* once at mount and
   // never updated, so resizing (Safari especially, on toolbar show/hide and rotation)
@@ -73,6 +139,9 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
     };
   }, []);
 
+  // Clean up the zoom throttle timer on unmount.
+  useEffect(() => () => { if (zoomThrottle.current) clearTimeout(zoomThrottle.current); }, []);
+
   useEffect(() => {
     const g = ref.current;
     if (!g) return;
@@ -80,7 +149,7 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
     controls.autoRotate = true;
     controls.autoRotateSpeed = 0.35;
     controls.enableDamping = true;
-    g.pointOfView({ lat: 55, lng: 12, altitude: 2.2 }, 0);
+    g.pointOfView({ lat: 55, lng: 12, altitude: ALT_FAR }, 0);
 
     // Craft pass: graticule + Fresnel atmosphere added to the scene, bloom on the
     // post-processing composer. Guarded because the underlying globe.gl handle wires
@@ -95,15 +164,23 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
     scene.add(atmosphere);
 
     const bloom = attachBloom(globe, window.innerWidth, window.innerHeight);
+    bloomRef.current = bloom;
 
     // Ambient auto-rotate that yields to the user. The constant spin makes markers
     // impossible to hover/click, so any interaction (drag, wheel, pointerdown) or
     // simply hovering the globe pauses rotation; it resumes ~4s after the pointer
-    // goes idle AND has left, so the globe never spins out from under the cursor.
+    // goes idle AND has left. The R master switch only GATES this — when off, it
+    // never resumes; when on, the behavior below is exactly as before.
     const canvas: HTMLCanvasElement = g.renderer().domElement;
     const IDLE_MS = 4000;
     let hovering = false;
     let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    // Rotation is allowed only when the master is on, no isolate filter is active, and
+    // the camera is zoomed out past the close-in altitude (and the pointer isn't on the
+    // globe). The interaction logic below is otherwise unchanged — these are gates.
+    const canAutoRotate = () =>
+      rotateOnRef.current && !filterActiveRef.current && altRef.current >= ALT_NO_ROTATE && !hovering;
 
     const stop = () => {
       controls.autoRotate = false;
@@ -113,11 +190,28 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
       if (resumeTimer) clearTimeout(resumeTimer);
       resumeTimer = setTimeout(() => {
         resumeTimer = undefined;
-        if (!hovering) controls.autoRotate = true;
+        if (canAutoRotate()) controls.autoRotate = true;
       }, IDLE_MS);
     };
+    stopRotateRef.current = stop;
+    armResumeRef.current = armResume;
     const onMove = () => { hovering = true; stop(); };
     const onLeave = () => { hovering = false; armResume(); };
+
+    // R toggles the master switch.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'r' && e.key !== 'R') return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      rotateOnRef.current = !rotateOnRef.current;
+      setRotateOn(rotateOnRef.current);
+      if (!rotateOnRef.current) {
+        controls.autoRotate = false;
+        if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = undefined; }
+      } else if (canAutoRotate()) {
+        controls.autoRotate = true;
+      }
+    };
 
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerleave', onLeave);
@@ -125,6 +219,7 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
     canvas.addEventListener('wheel', stop, { passive: true });
     controls.addEventListener('start', stop); // OrbitControls: drag/zoom begins
     controls.addEventListener('end', armResume); // drag/zoom ends -> idle countdown
+    window.addEventListener('keydown', onKey);
 
     return () => {
       canvas.removeEventListener('pointermove', onMove);
@@ -133,67 +228,125 @@ export function GlobeView({ points, arcs, onSelect }: Props) {
       canvas.removeEventListener('wheel', stop);
       controls.removeEventListener('start', stop);
       controls.removeEventListener('end', armResume);
+      window.removeEventListener('keydown', onKey);
       if (resumeTimer) clearTimeout(resumeTimer);
+      stopRotateRef.current = null;
+      armResumeRef.current = null;
       scene.remove(graticule);
       scene.remove(atmosphere);
       disposeObject(graticule);
       disposeObject(atmosphere);
       bloom?.dispose();
+      bloomRef.current = null;
     };
   }, []);
 
+  // Isolate filter gates rotation: selecting a category stops the spin; clearing it
+  // lets rotation resume after the usual idle (subject to the other gates).
+  useEffect(() => {
+    filterActiveRef.current = filterActive;
+    if (filterActive) stopRotateRef.current?.();
+    else armResumeRef.current?.();
+  }, [filterActive]);
+
+  // Camera zoom -> bloom (smooth, direct) + throttled marker/arc refresh.
+  const onZoom = (pov: { altitude: number }) => {
+    altRef.current = pov.altitude;
+    if (bloomRef.current) bloomRef.current.strength = bloomStrengthFor(pov.altitude);
+    if (zoomThrottle.current === undefined) {
+      zoomThrottle.current = setTimeout(() => {
+        zoomThrottle.current = undefined;
+        setViewAlt(altRef.current);
+      }, ZOOM_THROTTLE_MS);
+    }
+  };
+
+  const arcFactor = arcAltFactor(viewAlt);
+  const mScale = markerScale(viewAlt);
+  const mBright = markerBright(viewAlt);
+
+  // While a filter is active, arcs not in the selection disappear entirely (only the
+  // category's lines remain); zoom then hides whatever's left below ALT_ARC_HIDE.
+  const includedArcs = useMemo(
+    () => (filterActive ? arcs.filter((a) => a.region != null && selectedRegions.has(a.region)) : arcs),
+    [arcs, selectedRegions, filterActive],
+  );
+  const visibleArcs = viewAlt < ALT_ARC_HIDE ? NO_ARCS : includedArcs;
+
   return (
-    <GlobeAny
-      ref={ref}
-      width={size.w}
-      height={size.h}
-      // Opaque void so the canvas itself fills the viewport (the renderer clears to
-      // theme.bg); the parent also paints theme.bg, so a resize never flashes a gap.
-      backgroundColor={theme.bg}
-      // Click-to-select prioritizes markers: only points and the globe sphere take
-      // pointer events, so arcs/borders drawn over a marker never intercept the click
-      // (the hover raycast skips them and lands on the point behind). Clicking the bare
-      // globe clears the selection.
-      pointerEventsFilter={(obj: { __globeObjType?: string }) =>
-        obj?.__globeObjType === 'point' || obj?.__globeObjType === 'globe'}
-      onGlobeClick={() => onSelect(null)}
-      // Craft: no bitmap — a custom dark globe ShaderMaterial (see globeCraft.ts)
-      // carries a cyan Fresnel limb; the graticule, Fresnel atmosphere shell, and
-      // UnrealBloomPass are added to the scene/composer in the effect above.
-      globeMaterial={globeMaterial}
-      showAtmosphere={false}
-      // Country-border base map (modern Natural Earth 110m; on-ramp to historical
-      // basemaps). Hairline cyan borders over a near-invisible cyan fill, seated just
-      // above the surface so it stays beneath the ancestor markers and arcs.
-      polygonsData={WORLD_COUNTRIES}
-      polygonAltitude={0.006}
-      polygonCapColor={() => withAlpha(theme.accentCyan, 0.05)}
-      polygonSideColor={() => withAlpha(theme.accentCyan, 0.08)}
-      polygonStrokeColor={() => withAlpha(theme.accentCyan, 0.55)}
-      polygonsTransitionDuration={0}
-      // Ancestors as markers: leaves (terminal known ancestors) in amber, interior in
-      // cyan; altitude scales with contribution weight so "more of you" stands taller.
-      pointsData={points}
-      pointLat="lat"
-      pointLng="lng"
-      pointAltitude={(d: PointDatum) => 0.02 + d.weight * 0.6}
-      pointRadius={(d: PointDatum) => (d.isLeaf ? 0.34 : 0.2)}
-      pointColor={(d: PointDatum) => (d.isLeaf ? theme.accentAmber : theme.accentCyan)}
-      pointLabel={(d: PointDatum) => d.label}
-      onPointClick={(d: PointDatum) => onSelect(d.id)}
-      // Migration arcs child -> parent, graded by generation depth + weight.
-      arcsData={arcs}
-      arcStartLat="startLat"
-      arcStartLng="startLng"
-      arcEndLat="endLat"
-      arcEndLng="endLng"
-      arcColor={arcEndpointColors}
-      // Long migrations are drawn a touch bolder so they read as the hero connections.
-      arcStroke={(d: ArcDatum) => (d.longHaul ? 0.55 : 0.35)}
-      arcDashLength={0.4}
-      arcDashGap={0.1}
-      arcDashAnimateTime={4500}
-      // TODO(craft): hexBin density heatmap layer keyed on weight, toggled in the HUD.
-    />
+    <>
+      <GlobeAny
+        ref={ref}
+        width={size.w}
+        height={size.h}
+        // Opaque void so the canvas itself fills the viewport (the renderer clears to
+        // theme.bg); the parent also paints theme.bg, so a resize never flashes a gap.
+        backgroundColor={theme.bg}
+        onZoom={onZoom}
+        // Click-to-select prioritizes markers: only points and the globe sphere take
+        // pointer events, so arcs/borders drawn over a marker never intercept the click
+        // (the hover raycast skips them and lands on the point behind). While an isolate
+        // filter is active the globe is read-only — only the bare globe stays clickable,
+        // to clear. Selection is managed from the composition rows.
+        pointerEventsFilter={filterActive
+          ? (obj: { __globeObjType?: string }) => obj?.__globeObjType === 'globe'
+          : (obj: { __globeObjType?: string }) => obj?.__globeObjType === 'point' || obj?.__globeObjType === 'globe'}
+        onGlobeClick={() => onClear()}
+        // Craft: no bitmap — a custom dark globe ShaderMaterial (see globeCraft.ts)
+        // carries a cyan Fresnel limb; the graticule, Fresnel atmosphere shell, and
+        // UnrealBloomPass are added to the scene/composer in the effect above.
+        globeMaterial={globeMaterial}
+        showAtmosphere={false}
+        // Country-border base map (modern Natural Earth 110m; on-ramp to historical
+        // basemaps). Hairline cyan borders over a near-invisible cyan fill, seated just
+        // above the surface so it stays beneath the ancestor markers and arcs.
+        polygonsData={WORLD_COUNTRIES}
+        polygonAltitude={0.006}
+        polygonCapColor={() => withAlpha(theme.accentCyan, 0.05)}
+        polygonSideColor={() => withAlpha(theme.accentCyan, 0.08)}
+        polygonStrokeColor={() => withAlpha(theme.accentCyan, 0.55)}
+        polygonsTransitionDuration={0}
+        // Ancestors as markers: leaves (terminal known ancestors) in amber, interior in
+        // cyan; altitude scales with contribution weight. Size + brightness scale with
+        // camera altitude so a dense cluster resolves into distinct dots up close.
+        pointsData={points}
+        pointLat="lat"
+        pointLng="lng"
+        pointAltitude={(d: PointDatum) => 0.02 + d.weight * 0.6}
+        pointRadius={(d: PointDatum) => (d.isLeaf ? 0.34 : 0.2) * mScale}
+        pointColor={(d: PointDatum) => {
+          const included = !filterActive || (d.region != null && selectedRegions.has(d.region));
+          const bright = mBright * (included ? 1 : FILTER_DIM_MARKER); // zoom × filter
+          return mix(d.isLeaf ? theme.accentAmber : theme.accentCyan, theme.bg, 1 - bright);
+        }}
+        pointLabel={(d: PointDatum) => d.label}
+        onPointClick={(d: PointDatum) => onSelect(d.id)}
+        pointsTransitionDuration={250}
+        // Migration arcs child -> parent, graded by depth + weight, faded with zoom and
+        // hidden entirely up close (just dots). Excluded-category arcs are already
+        // filtered out of visibleArcs, so color only handles the zoom fade.
+        arcsData={visibleArcs}
+        arcStartLat="startLat"
+        arcStartLng="startLng"
+        arcEndLat="endLat"
+        arcEndLng="endLng"
+        arcColor={(d: ArcDatum) => arcEndpointColors(d, arcFactor)}
+        arcStroke={(d: ArcDatum) => (d.longHaul ? 0.55 : 0.35)}
+        arcDashLength={0.4}
+        arcDashGap={0.1}
+        arcDashAnimateTime={4500}
+        arcsTransitionDuration={120}
+        // TODO(craft): hexBin density heatmap layer keyed on weight, toggled in the HUD.
+      />
+      {/* Unobtrusive auto-rotate hint — reflects the EFFECTIVE state (the R master plus
+          the automatic gates: off while zoomed in or isolating). */}
+      <div style={{
+        position: 'fixed', bottom: 12, left: '50%', transform: 'translateX(-50%)',
+        fontFamily: theme.fontData, fontSize: 10, letterSpacing: '0.18em',
+        textTransform: 'uppercase', color: theme.textDim, opacity: 0.5, pointerEvents: 'none',
+      }}>
+        ↻ auto-rotate {rotateOn && !filterActive && viewAlt >= ALT_NO_ROTATE ? 'on' : 'off'} · R
+      </div>
+    </>
   );
 }

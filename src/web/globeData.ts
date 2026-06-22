@@ -12,6 +12,8 @@ export interface PointDatum {
   depth: number;
   isLeaf: boolean;
   label: string;
+  /** Modern country — the key the composition-row isolate filter matches against. */
+  region: string | null;
 }
 
 export interface ArcDatum {
@@ -28,6 +30,9 @@ export interface ArcDatum {
   /** A long-haul migration (>= ARC_LONGHAUL_KM): kept past the weight cull and drawn
    *  bright, because these transoceanic sweeps are the visually striking part. */
   longHaul: boolean;
+  /** Parent endpoint's modern country — an arc is "included" by the isolate filter
+   *  when this is in the selected set. */
+  region: string | null;
 }
 
 /** Level-of-detail for arcs. Short, low-weight arcs are crowding (the deep European
@@ -69,6 +74,7 @@ export function toPoints(ancestors: GlobeAncestor[]): PointDatum[] {
     depth: a.minDepth,
     isLeaf: a.isLeaf,
     label: `${a.name} — ${a.birthPlace ?? 'unknown'}${a.birthYear ? ` (${a.birthYear})` : ''}`,
+    region: a.modernCountry,
   }));
 }
 
@@ -91,6 +97,7 @@ export function toArcs(ancestors: GlobeAncestor[], links: GlobeLink[]): ArcDatum
     out.push({
       startLat: c.lat, startLng: c.lng, endLat: p.lat, endLng: p.lng,
       weight: p.contributionWeight, depth: p.minDepth, distanceKm: dist, longHaul,
+      region: p.modernCountry,
     });
   }
   return out;
