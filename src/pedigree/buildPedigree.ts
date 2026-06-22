@@ -57,6 +57,17 @@ export function buildPedigree(tree: ParsedTree, rootId: string, maxGenerations =
   };
 
   // DFS upward. `path` guards against cycles (a person as their own ancestor).
+  //
+  // KNOWN ISSUE (coverage invariant, deep collapsed trees): on a large real tree with
+  // pedigree collapse + a depth cap, `resolvedWeight + unresolvedWeight + gapWeight` can
+  // drift slightly off 1 (observed ~1.0018 on the 31k tree at gen 20). Two causes:
+  //  (a) a person reached BELOW the cap (recurses into parents) AND again AT the cap
+  //      (marked isLeaf) double-counts their shallow-path weight — once as their own
+  //      leaf weight, once via the parents they already recursed into;
+  //  (b) the cycle skip below drops an edge's weight without booking a gap (loses a bit).
+  // The smoke trees are shallow / collapse-free so they sum to exactly 1 and pass. This
+  // is a stage-2 weighting fix (needs care + new tests), independent of stage-3 work —
+  // left documented rather than hacked around.
   const walk = (id: string, depth: number, weight: number, path: Set<string>) => {
     addWeight(id, depth, weight);
 
