@@ -107,13 +107,13 @@ export class ModernBorders {
    *  the point's country (for provenance). Conservative: only true when both are known
    *  modern countries, different, and not a compatible (shared-territory) pair — so
    *  historical/unmatched names and ambiguous points are left trusted. */
-  contradicts(stringCountry: string | null, lat: number, lng: number): { contradicts: boolean; pointCountry: string | null } {
+  contradicts(stringCountry: string | null, lat: number, lng: number): { contradicts: boolean; pointCountry: string | null; stringKnown: boolean } {
     const stringCanon = this.canonical(stringCountry);
-    if (!stringCanon) return { contradicts: false, pointCountry: null };
+    if (!stringCanon) return { contradicts: false, pointCountry: null, stringKnown: false };
     const pointCountry = this.countryAt(lat, lng);
     const pointCanon = this.canonical(pointCountry);
-    if (!pointCanon) return { contradicts: false, pointCountry };
-    return { contradicts: !this.compatible(stringCanon, pointCanon), pointCountry };
+    if (!pointCanon) return { contradicts: false, pointCountry, stringKnown: true };
+    return { contradicts: !this.compatible(stringCanon, pointCanon), pointCountry, stringKnown: true };
   }
 }
 

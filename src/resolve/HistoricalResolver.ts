@@ -8,6 +8,7 @@ import type { Geocoder } from './GeoNamesResolver';
 import type { HistoricalBoundaries } from './HistoricalBasemaps';
 import { ModernBorders, defaultModernBorders } from './ModernBorders';
 import { canonicalizeCountry } from './PlaceCanon';
+import { ancientCoordContradiction } from './AncientPlaces';
 
 /** Best-effort modern country from a GEDCOM place hierarchy ("City, County, State,
  *  Country") — the last comma-separated token. Lets a coordinate-resolved place still
@@ -94,26 +95,35 @@ export class HistoricalResolver implements Resolver {
     const modernCountry = canon.canonical;
     const canonNote = canon.changed ? `; canon:"${canon.raw}"->"${canon.canonical}"` : '';
 
-    // Coordinate sanity: FamilySearch sometimes stamps a garbage point on a correct
-    // place string ("…, Scotland" carrying a point in India). If the string names a
-    // known modern country and the point clearly falls in a different one, distrust
-    // the point: keep the country from the string (composition stays right) but drop
-    // the coordinate (no wrong dot). Conservative — historical/unmatched country names,
-    // ambiguous/ocean points, and shared-territory pairs are left trusted.
+    // Coordinate dropped but label kept (no wrong dot, composition stays right).
+    const rejected = (note: string): ResolvedPlace => ({
+      raw: placeRaw ?? '',
+      coords: null,
+      modernCountry,
+      modernCountryRaw: canon.raw,
+      historicalPolity: modernCountry,
+      culturalRegion: null,
+      confidence: 0.4,
+      borderPrecision: null,
+      alternatives: [],
+      provenance: `gedcom-embedded-coords:(${coords.lat},${coords.lng}); ${note}${canonNote}`,
+    });
+
+    // Coordinate sanity (modern): FamilySearch sometimes stamps a garbage point on a
+    // correct place string ("…, Scotland" carrying a point in India). If the string
+    // names a known modern country and the point clearly falls in a different one,
+    // distrust the point. Conservative — historical/unmatched names, ambiguous/ocean
+    // points, and shared-territory pairs are left trusted.
     const check = this.borders.contradicts(modernCountry, coords.lat, coords.lng);
     if (check.contradicts) {
-      return {
-        raw: placeRaw ?? '',
-        coords: null,
-        modernCountry,
-        modernCountryRaw: canon.raw,
-        historicalPolity: modernCountry,
-        culturalRegion: null,
-        confidence: 0.4,
-        borderPrecision: null,
-        alternatives: [],
-        provenance: `gedcom-embedded-coords:(${coords.lat},${coords.lng}); coord-rejected:string="${modernCountry}",point-in="${check.pointCountry}"${canonNote}`,
-      };
+      return rejected(`coord-rejected:string="${modernCountry}",point-in="${check.pointCountry}"`);
+    }
+    // Coordinate sanity (ancient): only when the modern check couldn't validate (the
+    // country token isn't a known modern country) — catches "Edom (Idumaea)" in South
+    // Africa that the modern check misses. Small, bounded table; see AncientPlaces.
+    if (!check.stringKnown) {
+      const ancient = ancientCoordContradiction(placeRaw, coords.lat, coords.lng);
+      if (ancient) return rejected(`coord-rejected:ancient="${ancient}",point=(${coords.lat.toFixed(2)},${coords.lng.toFixed(2)})`);
     }
 
     const out: ResolvedPlace = {

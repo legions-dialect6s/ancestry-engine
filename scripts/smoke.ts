@@ -101,4 +101,17 @@ assert(usVariants.includes('USA') && usVariants.includes('Va'), `placeVariants r
 const czCov = cz.report.coverage;
 assert(Math.abs(czCov.resolvedWeight + czCov.unresolvedWeight + czCov.gapWeight - 1) < 1e-9, `entity-resolution tree coverage sums to 1`);
 
+// Historical-coord sanity: an ancient place name with a wildly-off coord (Edom in
+// South Africa) drops the coord but keeps the label.
+const ancientGed = [
+  '0 HEAD', '1 GEDC', '2 VERS 7.0',
+  '0 @I1@ INDI', '1 NAME Anc /Subject/',
+  '1 BIRT', '2 PLAC Edom (Idumaea)', '3 MAP', '4 LATI S29.0', '4 LONG E24.0', // point in South Africa
+  '0 TRLR', '',
+].join('\n');
+const az = await analyze(ancientGed);
+const asubj = az.ancestors.find((a) => a.id === '@I1@');
+assert(asubj?.lat == null && asubj?.lng == null, `ancient mismatch drops the coordinate (got ${asubj?.lat},${asubj?.lng})`);
+assert(/coord-rejected:ancient/.test(asubj?.provenance ?? ''), `ancient mismatch recorded in provenance`);
+
 console.log('\nALL SMOKE CHECKS PASSED');
