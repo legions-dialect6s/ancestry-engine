@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+
+# Machine-local Claude Code settings (permission allowlist, etc.) — not shared.
+.claude/settings.local.json
+
+# Real GEDCOMs are PII of living relatives — never commit one (CLAUDE.md invariant 7).
+# Only the synthetic src/demo/sample.ged is allowed in the repo.
+data/
+*.ged
+!src/demo/sample.ged

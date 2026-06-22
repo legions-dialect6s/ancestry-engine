@@ -1,0 +1,124 @@
+0 HEAD
+1 SOUR ancestry-engine-sample
+1 GEDC
+2 VERS 7.0
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME Test /Subject/
+1 SEX M
+1 BIRT
+2 DATE 1998
+2 PLAC Albany, Oregon, USA
+1 FAMC @F1@
+0 @I2@ INDI
+1 NAME Father /Subject/
+1 SEX M
+1 BIRT
+2 DATE 1970
+2 PLAC Portland, Oregon, USA
+1 FAMC @F2@
+1 FAMS @F1@
+0 @I3@ INDI
+1 NAME Mother /Subject/
+1 SEX F
+1 BIRT
+2 DATE 1971
+2 PLAC Boise, Idaho, USA
+1 FAMC @F3@
+1 FAMS @F1@
+0 @I4@ INDI
+1 NAME Paternal /Grandfather/
+1 SEX M
+1 BIRT
+2 DATE 1945
+2 PLAC Salt Lake City, Utah, USA
+1 FAMC @F4@
+1 FAMS @F2@
+0 @I5@ INDI
+1 NAME Paternal /Grandmother/
+1 SEX F
+1 BIRT
+2 DATE 1947
+2 PLAC Christiania, Norway
+1 FAMC @F5@
+1 FAMS @F2@
+0 @I6@ INDI
+1 NAME Maternal /Grandfather/
+1 SEX M
+1 BIRT
+2 DATE 1944
+2 PLAC Åbo, Finland
+1 FAMC @F6@
+1 FAMS @F3@
+0 @I7@ INDI
+1 NAME Maternal /Grandmother/
+1 SEX F
+1 BIRT
+2 DATE 1948
+2 PLAC Lemberg, Austria
+1 FAMC @F7@
+1 FAMS @F3@
+0 @I10@ INDI
+1 NAME Shared /Greatgrandfather/
+1 SEX M
+1 BIRT
+2 DATE 1915
+2 PLAC Köln, Germany
+0 @I11@ INDI
+1 NAME Vague /Origin/
+1 SEX F
+1 BIRT
+2 DATE ABT 1918
+2 PLAC Hinterland
+0 @I12@ INDI
+1 NAME Norwegian /Greatgrandmother/
+1 SEX F
+1 BIRT
+2 DATE 1920
+2 PLAC Bergen, Norway
+0 @I13@ INDI
+1 NAME Swedish /Greatgrandfather/
+1 SEX M
+1 BIRT
+2 DATE 1916
+2 PLAC Stockholm, Sweden
+0 @I14@ INDI
+1 NAME Finnish /Greatgrandmother/
+1 SEX F
+1 BIRT
+2 DATE 1930
+2 PLAC Helsinki, Finland
+0 @I15@ INDI
+1 NAME Hungarian /Greatgrandmother/
+1 SEX F
+1 BIRT
+2 DATE 1895
+2 PLAC Pressburg, Hungary
+0 @F1@ FAM
+1 HUSB @I2@
+1 WIFE @I3@
+1 CHIL @I1@
+0 @F2@ FAM
+1 HUSB @I4@
+1 WIFE @I5@
+1 CHIL @I2@
+0 @F3@ FAM
+1 HUSB @I6@
+1 WIFE @I7@
+1 CHIL @I3@
+0 @F4@ FAM
+1 HUSB @I10@
+1 WIFE @I11@
+1 CHIL @I4@
+0 @F5@ FAM
+1 WIFE @I12@
+1 CHIL @I5@
+0 @F6@ FAM
+1 HUSB @I13@
+1 WIFE @I14@
+1 CHIL @I6@
+0 @F7@ FAM
+1 HUSB @I10@
+1 WIFE @I15@
+1 CHIL @I7@
+0 TRLR
