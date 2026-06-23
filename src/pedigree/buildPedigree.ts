@@ -34,8 +34,18 @@ export function buildPedigree(tree: ParsedTree, rootId: string, maxGenerations =
       existing.timesReached += 1;
       if (!existing.depths.includes(depth)) existing.depths.push(depth);
     } else {
-      nodes.set(id, { kind: 'ancestor', id, person, depths: [depth], timesReached: 1, contributionWeight: weight, isLeaf: false });
+      nodes.set(id, { kind: 'ancestor', id, person, depths: [depth], timesReached: 1, contributionWeight: weight, leafWeight: 0, isLeaf: false });
     }
+  };
+
+  // Mark a person terminal for THIS visit and book the visit's weight as leaf weight.
+  // Only the terminating passes accumulate here — a person reached below the cap (where
+  // they recurse) and again at the cap (where they terminate) books only the at-cap
+  // pass, so their recursed-into parents aren't double-counted against the same weight.
+  const terminate = (id: string, weight: number) => {
+    const node = nodes.get(id)!;
+    node.isLeaf = true;
+    node.leafWeight += weight;
   };
 
   const addGap = (childId: string, slot: 'father' | 'mother', depth: number, weight: number) => {
@@ -58,21 +68,21 @@ export function buildPedigree(tree: ParsedTree, rootId: string, maxGenerations =
 
   // DFS upward. `path` guards against cycles (a person as their own ancestor).
   //
-  // KNOWN ISSUE (coverage invariant, deep collapsed trees): on a large real tree with
-  // pedigree collapse + a depth cap, `resolvedWeight + unresolvedWeight + gapWeight` can
-  // drift slightly off 1 (observed ~1.0018 on the 31k tree at gen 20). Two causes:
-  //  (a) a person reached BELOW the cap (recurses into parents) AND again AT the cap
-  //      (marked isLeaf) double-counts their shallow-path weight — once as their own
-  //      leaf weight, once via the parents they already recursed into;
-  //  (b) the cycle skip below drops an edge's weight without booking a gap (loses a bit).
-  // The smoke trees are shallow / collapse-free so they sum to exactly 1 and pass. This
-  // is a stage-2 weighting fix (needs care + new tests), independent of stage-3 work —
-  // left documented rather than hacked around.
+  // Coverage invariant — each visit's slot-weight is partitioned EXACTLY ONCE: a visit
+  // either recurses into parents (passing its full weight down, split in half per slot)
+  // or terminates (booked as leaf weight via `terminate`, or as gap weight via `addGap`),
+  // never both. Pedigree collapse means the same person is reached at multiple depths;
+  // because termination books weight per-VISIT into `leafWeight` (not the pooled
+  // `contributionWeight`), a person reached below the cap (recurses) and again at the cap
+  // (terminates) contributes only the at-cap pass to the budget — the below-cap pass is
+  // already accounted for in the parents it recursed into. With cyclic edges also booked
+  // as gaps (below), no weight is created or lost, so resolved + unresolved + gap === 1
+  // holds on deep collapsed trees, not just shallow ones.
   const walk = (id: string, depth: number, weight: number, path: Set<string>) => {
     addWeight(id, depth, weight);
 
     if (depth >= maxGenerations) {
-      nodes.get(id)!.isLeaf = true; // truncated by our cap, not by data
+      terminate(id, weight); // truncated by our cap, not by data — this pass's weight stops here
       return;
     }
 
@@ -81,17 +91,19 @@ export function buildPedigree(tree: ParsedTree, rootId: string, maxGenerations =
     const childDepth = depth + 1;
 
     if (!father && !mother) {
-      nodes.get(id)!.isLeaf = true; // terminal known ancestor — represents this branch
+      terminate(id, weight); // terminal known ancestor — represents this branch
       return;
     }
 
     links.set(id, { father: father ?? undefined, mother: mother ?? undefined });
 
     for (const [slot, parentId] of [['father', father], ['mother', mother]] as const) {
-      if (parentId) {
-        if (path.has(parentId)) continue; // cycle in source data; skip this edge
+      if (parentId && !path.has(parentId)) {
         walk(parentId, childDepth, childWeight, new Set(path).add(parentId));
       } else {
+        // Missing parent, or a cyclic edge we can't follow without looping: either way
+        // this lineage slot is unknown. Book it as a gap so its weight is conserved
+        // (first-class uncertainty) rather than silently dropped.
         addGap(id, slot, childDepth, childWeight);
       }
     }

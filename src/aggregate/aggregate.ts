@@ -50,15 +50,21 @@ export function aggregate(dag: AncestorDAG, resolver: Resolver): AncestryReport 
     const isResolved = rp.modernCountry !== null;
 
     // Fractional makeup is attributed at leaves only (a leaf represents its branch).
+    // Use `leafWeight` — the weight that actually TERMINATES at this person — not the
+    // pooled `contributionWeight`: under pedigree collapse a person can be reached both
+    // as an internal node (its weight flows up into its parents) and as a cap-truncated
+    // leaf, and only the terminating portion belongs to the coverage budget. The two are
+    // equal for any leaf not also reached internally, so this is identical on shallow /
+    // collapse-free trees and only differs where the double-count would otherwise occur.
     if (node.isLeaf) {
       if (isResolved) {
-        resolvedWeight += node.contributionWeight;
+        resolvedWeight += node.leafWeight;
         for (const g of GRANULARITIES) {
           const r = regionOf(rp, g);
-          if (r) frac[g].set(r, (frac[g].get(r) ?? 0) + node.contributionWeight);
+          if (r) frac[g].set(r, (frac[g].get(r) ?? 0) + node.leafWeight);
         }
       } else {
-        unresolvedWeight += node.contributionWeight;
+        unresolvedWeight += node.leafWeight;
       }
     }
 
