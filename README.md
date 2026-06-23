@@ -4,7 +4,7 @@
 
 An entity-resolution and ontology engine for adversarially messy real-world data, demonstrated on genealogy — one of the messiest domains there is (free-text place names, historical spellings, borders that move under the data, missing links). It reconstructs canonical real-world entities from place-string variants, treats uncertainty and provenance as first-class, and renders the result as a 3D geoscape. The proving ground is a 31k-record family tree; the model is the product, the globe is one view onto it.
 
-- **Entity resolution** — raw place strings reconciled to canonical places, keeping the variants as evidence.
+- **Entity resolution** — variant country/place strings folded to one canonical entity (`USA / US / Va → United States`, `Schweiz / Suisse → Switzerland`), keeping every variant as evidence.
 - **Provenance on every value** — each resolved place carries how and why it resolved, not just the answer.
 - **Derived properties over the graph** — fractional makeup, contribution weight, and coverage are computed from the pedigree DAG, never denormalized onto records.
 - **Uncertainty as a first-class coverage budget** — `resolved + unresolved + gap = 1`; the unknown is reported, never normalized away.
