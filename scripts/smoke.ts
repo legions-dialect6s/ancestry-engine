@@ -5,6 +5,11 @@ import { dirname, join } from 'node:path';
 
 import { analyze } from '../src/analyze';
 import { buildLayers, placed, filterByDepth } from '../src/web/globeData';
+import { buildPedigree } from '../src/pedigree/buildPedigree';
+import { aggregate } from '../src/aggregate/aggregate';
+import { StubResolver } from '../src/resolve/StubResolver';
+import type { ParsedTree } from '../src/ingest/Source';
+import type { Individual, Family } from '../src/model/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const text = readFileSync(join(here, '..', 'src', 'demo', 'sample.ged'), 'utf8');
@@ -113,5 +118,58 @@ const az = await analyze(ancientGed);
 const asubj = az.ancestors.find((a) => a.id === '@I1@');
 assert(asubj?.lat == null && asubj?.lng == null, `ancient mismatch drops the coordinate (got ${asubj?.lat},${asubj?.lng})`);
 assert(/coord-rejected:ancient/.test(asubj?.provenance ?? ''), `ancient mismatch recorded in provenance`);
+
+// ---- Stage-2 coverage invariant under pedigree collapse + depth cap ----
+// Regression for the buildPedigree weight double-count. These need exact control over
+// topology + cap, so they drive buildPedigree/aggregate directly off a synthetic tree
+// (place strings omitted: every leaf is unresolved, which is fine — the invariant is
+// resolved + unresolved + gap === 1 regardless of where the weight lands).
+type FamSpec = { husband?: string; wife?: string };
+function synthTree(people: string[], childOf: Record<string, string>, families: Record<string, FamSpec>): ParsedTree {
+  const individuals = new Map<string, Individual>();
+  for (const id of people) {
+    individuals.set(id, { id, given: id, surname: null, sex: 'U', events: [], famc: childOf[id] ? [childOf[id]!] : [], fams: [] });
+  }
+  const fams = new Map<string, Family>();
+  for (const [fid, f] of Object.entries(families)) {
+    fams.set(fid, { id: fid, husband: f.husband ?? null, wife: f.wife ?? null, children: [] });
+  }
+  return { individuals, families: fams };
+}
+const covSum = (c: { resolvedWeight: number; unresolvedWeight: number; gapWeight: number }) =>
+  c.resolvedWeight + c.unresolvedWeight + c.gapWeight;
+
+// Collapse + cap: X sits at depth 2 (recurses into its parents Y,Z) AND at depth 3 (== cap,
+// truncated leaf). The bug counted X's shallow pass twice — once as X's own leaf weight,
+// once via Y,Z — so coverage summed to 1.25. Each slot-weight must be partitioned once.
+const CAP = 3;
+const collapseTree = synthTree(
+  ['I1', 'A', 'B', 'C', 'D', 'E', 'G', 'X', 'Y', 'Z'],
+  { I1: 'F1', A: 'F2', B: 'F3', D: 'F4', X: 'F5' },
+  {
+    F1: { husband: 'A', wife: 'B' },
+    F2: { husband: 'X', wife: 'C' }, // X is A's father -> X reached at depth 2 (recurses)
+    F3: { husband: 'D', wife: 'E' },
+    F4: { husband: 'X', wife: 'G' }, // X is D's father -> X reached at depth 3 (== cap, leaf)
+    F5: { husband: 'Y', wife: 'Z' }, // X's own parents  -> the below-cap recursion target
+  },
+);
+const collapseDag = buildPedigree(collapseTree, 'I1', CAP);
+const xNode = collapseDag.nodes.get('X');
+assert(xNode != null && xNode.depths.some((d) => d < CAP) && xNode.depths.includes(CAP),
+  `collapsed X is reached below the cap AND at it (depths ${xNode?.depths.join(',')})`);
+const collapseSum = covSum(aggregate(collapseDag, new StubResolver()).coverage);
+assert(Math.abs(collapseSum - 1) < 1e-9, `collapse+cap coverage sums to 1 (got ${collapseSum})`);
+
+// Cyclic edge (a person as their own ancestor): the slot we can't follow without looping
+// must be conserved as a gap, not silently dropped. The bug summed coverage to 0.75.
+const cycleTree = synthTree(
+  ['I1', 'P', 'Q', 'R'],
+  { I1: 'F1', P: 'F2' },
+  { F1: { husband: 'P', wife: 'Q' }, F2: { husband: 'I1', wife: 'R' } }, // P's father is I1 -> cycle
+);
+const cycleCov = aggregate(buildPedigree(cycleTree, 'I1', 8), new StubResolver()).coverage;
+assert(Math.abs(covSum(cycleCov) - 1) < 1e-9, `cyclic-edge coverage sums to 1 (got ${covSum(cycleCov)})`);
+assert(cycleCov.gapWeight > 0, `cyclic slot conserved as gap weight, not dropped (got ${cycleCov.gapWeight})`);
 
 console.log('\nALL SMOKE CHECKS PASSED');
