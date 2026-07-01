@@ -41,24 +41,27 @@ const FILTER_DIM_MARKER = 0.16;
 // is just dots. The altitude signal comes from globe.gl's onZoom callback.
 const ALT_FAR = 2.2; // initial / fully zoomed-out view
 const ALT_NEAR = 0.6; // fully zoomed-in
-const MARKER_FAR_SCALE = 1.0;
-const MARKER_NEAR_SCALE = 0.45;
+// Marker radius shrinks CONTINUOUSLY with altitude (radius is in angular degrees, so
+// a fixed radius grows on screen as the camera closes in — scaling by alt/ALT_FAR
+// keeps the on-screen dot size roughly constant instead of ballooning). The floor
+// keeps deep-zoom dots clickable.
+const MARKER_MIN_SCALE = 0.14;
 const MARKER_FAR_BRIGHT = 1.0;
-const MARKER_NEAR_BRIGHT = 0.55;
+const MARKER_NEAR_BRIGHT = 0.75;
 // Marker pillar height also flattens on zoom ("lines" bug, part 3): a high-weight
 // leaf's pillar is up to ~0.6 globe radii tall, and viewed obliquely up close a tall
-// thin pillar reads as a line, not a dot. Full weight-proportional height at the wide
-// view; squashed to near-surface dots at inspection depth.
-const PILLAR_FAR_SCALE = 1.0;
-const PILLAR_NEAR_SCALE = 0.08;
+// thin pillar reads as a line, not a dot. Quadratic in altitude so the flattening
+// arrives fast once you leave the overview; the floor keeps dots raycastable.
+const PILLAR_MIN_SCALE = 0.02;
 const BLOOM_FAR = 0.38; // matches attachBloom's initial strength
 const BLOOM_NEAR = 0.1;
-// Arcs belong to the WIDE overview only. Full at the default framing (and zoomed out),
-// they fade out the instant you zoom in and are gone entirely below ALT_ARC_HIDE — so
-// the moment you leave the overview to inspect a region (England, mainland Europe) the
-// animated lines are gone and it's just dots.
-const ALT_ARC_HIDE = 2.0; // arcs hidden entirely below this altitude
-const ARC_FULL_ALT = 2.2; // arcs full at/above (the default framing); fade down to ALT_ARC_HIDE
+// Arcs are the migration story — the lines connecting the nodes — so they stay at
+// full strength from the default framing down through moderate inspection zoom, then
+// fade and clear out only at true close-in, where street-level detail should be just
+// dots. (The old band was full at 2.2 / gone below 2.0: a razor-thin sliver at max
+// zoom-out, so arcs vanished on the first scroll click.)
+const ALT_ARC_HIDE = 0.45; // arcs hidden entirely below this altitude (true close-in)
+const ARC_FULL_ALT = 1.2; // arcs full at/above this; fade between the two
 // Auto-rotation switches off once you've zoomed in past this (gentler than arc-hide).
 const ALT_NO_ROTATE = 1.3;
 // The graticule is overview texture, like the arcs: its long great-circle sweeps read
@@ -75,9 +78,12 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 /** 1 when zoomed out (far), 0 when zoomed in (near). */
 const zoomT = (alt: number) => clamp01((alt - ALT_NEAR) / (ALT_FAR - ALT_NEAR));
 const bloomStrengthFor = (alt: number) => lerp(BLOOM_NEAR, BLOOM_FAR, zoomT(alt));
-const markerScale = (alt: number) => lerp(MARKER_NEAR_SCALE, MARKER_FAR_SCALE, zoomT(alt));
+const markerScale = (alt: number) => Math.min(1, Math.max(MARKER_MIN_SCALE, alt / ALT_FAR));
 const markerBright = (alt: number) => lerp(MARKER_NEAR_BRIGHT, MARKER_FAR_BRIGHT, zoomT(alt));
-const pillarScale = (alt: number) => lerp(PILLAR_NEAR_SCALE, PILLAR_FAR_SCALE, zoomT(alt));
+const pillarScale = (alt: number) => {
+  const t = Math.min(1, alt / ALT_FAR); // continuous below ALT_NEAR, unlike zoomT
+  return Math.max(PILLAR_MIN_SCALE, t * t);
+};
 /** 1 when arcs are full, ramps to 0 by ALT_ARC_HIDE (below which arcs are hidden). */
 const arcAltFactor = (alt: number) => clamp01((alt - ALT_ARC_HIDE) / (ARC_FULL_ALT - ALT_ARC_HIDE));
 const graticuleOpacityFor = (alt: number) =>
@@ -316,7 +322,10 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
   // layer whenever an accessor prop changes identity, so inline closures made EVERY
   // re-render (a selection click, the rotate hint, a resize) re-process points, arcs,
   // AND polygons. With these, a layer only re-processes when its inputs change.
-  const pointAltitudeFn = useCallback((d: PointDatum) => (0.02 + d.weight * 0.6) * pScale, [pScale]);
+  // Pillar height flattens with zoom, but the 0.003 floor keeps every dot ABOVE the
+  // country-polygon layer (0.002) at all altitudes — a fully scaled pillar would sink
+  // under the cap fill and be occluded. At pScale=1 this equals the original 0.02+w*0.6.
+  const pointAltitudeFn = useCallback((d: PointDatum) => 0.003 + (0.017 + d.weight * 0.6) * pScale, [pScale]);
   const pointRadiusFn = useCallback((d: PointDatum) => (d.isLeaf ? 0.34 : 0.2) * mScale, [mScale]);
   const pointColorFn = useCallback((d: PointDatum) => {
     const included = !filterActive || (d.region != null && selectedRegions.has(d.region));
@@ -365,8 +374,11 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
         // above the surface so it stays beneath the ancestor markers and arcs. Stroke
         // dims with zoom (the "lines" bug, part 2: borders at 0.55 read as glowing
         // arcs up close) — faint context near, full brightness at the wide view.
+        // Seated 0.002 above the surface: high enough to avoid z-fighting the globe,
+        // low enough that (a) the extruded side walls don't read as thick slabs at
+        // close zoom and (b) fully flattened markers (floor 0.003) still clear the cap.
         polygonsData={WORLD_COUNTRIES}
-        polygonAltitude={0.006}
+        polygonAltitude={0.002}
         polygonCapColor={polygonCapColorFn}
         polygonSideColor={polygonSideColorFn}
         polygonStrokeColor={polygonStrokeColorFn}
