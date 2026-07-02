@@ -12,7 +12,7 @@ npm install
 npm run dev         # CLI: sample tree -> report + temporal resolution
 npm run smoke       # automated checks on the pure wiring — KEEP THIS GREEN
 npm run typecheck   # strict; must stay clean
-npm run dev:web     # geoscape UI (Vite), engine runs client-side
+npm run dev:web     # geoscape UI (Vite), engine runs client-side — pinned to port 5175
 npm run build:web   # production bundle
 ```
 
@@ -40,7 +40,7 @@ npm run build:web   # production bundle
 
 ## Current state
 
-Checkpoint complete: real resolver (geocode + temporal point-in-polygon) running on **sample** datasets, full pipeline green, web skeleton wired (globe + corner HUD + look-back slider + selection). Visual craft is stubbed with `TODO(craft)` markers.
+Real resolver (geocode + temporal point-in-polygon) running on **sample** datasets, full pipeline green. Stage-2 coverage invariant holds under deep pedigree collapse + depth caps (per-visit `leafWeight` partition; smoke-tested, verified on 31k-scale synthetic trees). Web: globe + corner HUD + look-back slider + selection wired; camera-altitude response (arc band, continuous marker/pillar scaling, graticule/border fades) fixed and verified against the live app; co-located markers declutter via a deterministic golden-angle spread in `globeData.ts`. Core craft (dark globe material, graticule, Fresnel atmosphere, bloom) is built in `globeCraft.ts` — remaining craft is in the task loop below.
 
 ## Task loop (suggested order)
 
@@ -49,7 +49,7 @@ Checkpoint complete: real resolver (geocode + temporal point-in-polygon) running
    - Replace `SAMPLE_GAZETTEER` with a GeoNames extract (cities + `alternateNames` for historical spellings).
    - Add an `rbush` (or flatbush) spatial index before the point-in-polygon test in `HistoricalBasemaps`.
 2. **Golden tests** — Lemberg/Lwów/Lviv, Königsberg/Kaliningrad, Danzig/Gdańsk, Pressburg/Bratislava, Åbo/Turku, Christiania/Oslo, Bohemia, Austria-Hungary all resolve to the period-correct polity. Extend `scripts/smoke.ts`.
-3. **Visual craft** (the `TODO(craft)` hooks in `GlobeView.tsx`): custom dark globe material + graticule, Fresnel atmosphere shader, `UnrealBloomPass`, a hexbin density heatmap layer toggle, selection glow. Then responsive/mobile, visible focus, reduced-motion. Tokens are in `src/web/theme.ts` — derive from them, don't invent new colors. Deploy as a static site.
+3. **Visual craft** (remaining — dark globe material, graticule, atmosphere, and bloom are already built in `globeCraft.ts`): a hexbin density heatmap layer toggle (`TODO(craft)` in `GlobeView.tsx`), selection glow. Then responsive/mobile, visible focus, reduced-motion. Tokens are in `src/web/theme.ts` — derive from them, don't invent new colors. Deploy as a static site.
 4. **Later:** confidence propagation through aggregation; Monte Carlo over ambiguous resolutions for distributions instead of point estimates; FamilySearch API `Source` adapter.
 
 ## Conventions
