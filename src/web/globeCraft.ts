@@ -138,6 +138,15 @@ export function makeGraticule(globe: GlobeHandle): THREE.Group {
   return group;
 }
 
+/** Set the graticule's line opacity (all lines share one material). Fully faded also
+ *  flips `visible` off so the ~36 line draw calls are skipped entirely up close. */
+export function setGraticuleOpacity(graticule: THREE.Group, opacity: number): void {
+  graticule.visible = opacity > 0.002;
+  const line = graticule.children[0] as THREE.Line | undefined;
+  const mat = line?.material as THREE.LineBasicMaterial | undefined;
+  if (mat) mat.opacity = opacity;
+}
+
 // --- Bloom ----------------------------------------------------------------------
 // Full-scene UnrealBloomPass on globe.gl's own post-processing composer. Threshold
 // near zero so the dark scene's bright bits (limb, markers, arcs) glow.

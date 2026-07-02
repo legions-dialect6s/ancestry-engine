@@ -60,13 +60,53 @@ export function placed(ancestors: GlobeAncestor[]): Placed[] {
   return ancestors.filter((a): a is Placed => a.lat != null && a.lng != null);
 }
 
+// --- Overlap declutter ------------------------------------------------------------
+// Ancestors born in the same city resolve to the SAME geocode, so their markers stack
+// into one unreadable dot. Spread each co-located group on a deterministic golden-angle
+// spiral around the shared spot: sub-pixel at the wide view, resolving into distinct
+// dots as the camera closes in. The heaviest member keeps the TRUE coordinate (the
+// honest anchor); the rest step outward by rank. Pure + deterministic (no randomness),
+// computed once per layer build — zero per-frame cost. Arcs are built from the spread
+// positions too, so lines land exactly on dots.
+export const SPREAD_CELL_DEG = 0.05; // within this, two places are visually "the same spot"
+export const SPREAD_STEP_DEG = 0.16; // spiral pitch: rank k sits at ~STEP*sqrt(k) degrees
+const GOLDEN_ANGLE = 2.399963229728653;
+
+export function spreadOverlaps(list: Placed[]): Placed[] {
+  const cells = new Map<string, number[]>();
+  list.forEach((a, i) => {
+    const key = `${Math.round(a.lat / SPREAD_CELL_DEG)}:${Math.round(a.lng / SPREAD_CELL_DEG)}`;
+    const cell = cells.get(key);
+    if (cell) cell.push(i);
+    else cells.set(key, [i]);
+  });
+
+  const out = list.slice();
+  for (const idxs of cells.values()) {
+    if (idxs.length < 2) continue; // singletons stay exactly where the record puts them
+    const ranked = [...idxs].sort((x, y) => list[y]!.contributionWeight - list[x]!.contributionWeight);
+    ranked.forEach((pi, k) => {
+      if (k === 0) return; // heaviest keeps the true coordinate
+      const a = list[pi]!;
+      const r = SPREAD_STEP_DEG * Math.sqrt(k);
+      const theta = k * GOLDEN_ANGLE;
+      // Divide the lng offset by cos(lat) so the spiral is isotropic on the sphere
+      // (clamped away from the poles where the correction blows up).
+      const stretch = Math.max(0.2, Math.cos((a.lat * Math.PI) / 180));
+      out[pi] = { ...a, lat: a.lat + r * Math.sin(theta), lng: a.lng + (r * Math.cos(theta)) / stretch };
+    });
+  }
+  return out;
+}
+
 /** "How far back" slider: keep ancestors whose nearest appearance is within depth. */
 export function filterByDepth(ancestors: GlobeAncestor[], maxDepth: number): GlobeAncestor[] {
   return ancestors.filter((a) => a.minDepth <= maxDepth);
 }
 
-export function toPoints(ancestors: GlobeAncestor[]): PointDatum[] {
-  return placed(ancestors).map((a) => ({
+/** Takes the placed (and already spread) list, so points and arcs share positions. */
+export function toPoints(list: Placed[]): PointDatum[] {
+  return list.map((a) => ({
     id: a.id,
     lat: a.lat,
     lng: a.lng,
@@ -81,8 +121,8 @@ export function toPoints(ancestors: GlobeAncestor[]): PointDatum[] {
 /** Migration arcs: child -> parent, only where both endpoints are placed. Crowded
  *  short arcs are culled by weight; long-haul migrations are kept regardless (see the
  *  ARC_* constants). Markers are never culled. */
-export function toArcs(ancestors: GlobeAncestor[], links: GlobeLink[]): ArcDatum[] {
-  const byId = new Map(placed(ancestors).map((a) => [a.id, a]));
+export function toArcs(list: Placed[], links: GlobeLink[]): ArcDatum[] {
+  const byId = new Map(list.map((a) => [a.id, a]));
   const out: ArcDatum[] = [];
   for (const l of links) {
     const c = byId.get(l.childId);
@@ -103,8 +143,9 @@ export function toArcs(ancestors: GlobeAncestor[], links: GlobeLink[]): ArcDatum
   return out;
 }
 
-/** Convenience: everything the globe needs for a given depth setting. */
+/** Convenience: everything the globe needs for a given depth setting. Runs once per
+ *  depth change (memoized by the caller), so the declutter spread is not a frame cost. */
 export function buildLayers(ancestors: GlobeAncestor[], links: GlobeLink[], maxDepth: number) {
-  const visible = filterByDepth(ancestors, maxDepth);
+  const visible = spreadOverlaps(placed(filterByDepth(ancestors, maxDepth)));
   return { points: toPoints(visible), arcs: toArcs(visible, links) };
 }

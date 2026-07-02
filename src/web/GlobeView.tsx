@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, useState, type ComponentType } from 'react';
+import { useRef, useEffect, useMemo, useState, useCallback, type ComponentType } from 'react';
 import Globe from 'react-globe.gl';
 import { theme, withAlpha, mix } from './theme';
 import type { PointDatum, ArcDatum } from './globeData';
@@ -7,6 +7,7 @@ import {
   makeGlobeMaterial,
   makeAtmosphere,
   makeGraticule,
+  setGraticuleOpacity,
   attachBloom,
   disposeObject,
   type GlobeHandle,
@@ -40,30 +41,54 @@ const FILTER_DIM_MARKER = 0.16;
 // is just dots. The altitude signal comes from globe.gl's onZoom callback.
 const ALT_FAR = 2.2; // initial / fully zoomed-out view
 const ALT_NEAR = 0.6; // fully zoomed-in
-const MARKER_FAR_SCALE = 1.0;
-const MARKER_NEAR_SCALE = 0.45;
+// Marker radius shrinks CONTINUOUSLY with altitude (radius is in angular degrees, so
+// a fixed radius grows on screen as the camera closes in — scaling by alt/ALT_FAR
+// keeps the on-screen dot size roughly constant instead of ballooning). The floor
+// keeps deep-zoom dots clickable.
+const MARKER_MIN_SCALE = 0.14;
 const MARKER_FAR_BRIGHT = 1.0;
-const MARKER_NEAR_BRIGHT = 0.55;
+const MARKER_NEAR_BRIGHT = 0.75;
+// Marker pillar height also flattens on zoom ("lines" bug, part 3): a high-weight
+// leaf's pillar is up to ~0.6 globe radii tall, and viewed obliquely up close a tall
+// thin pillar reads as a line, not a dot. Quadratic in altitude so the flattening
+// arrives fast once you leave the overview; the floor keeps dots raycastable.
+const PILLAR_MIN_SCALE = 0.02;
 const BLOOM_FAR = 0.38; // matches attachBloom's initial strength
 const BLOOM_NEAR = 0.1;
-// Arcs belong to the WIDE overview only. Full at the default framing (and zoomed out),
-// they fade out the instant you zoom in and are gone entirely below ALT_ARC_HIDE — so
-// the moment you leave the overview to inspect a region (England, mainland Europe) the
-// animated lines are gone and it's just dots.
-const ALT_ARC_HIDE = 2.0; // arcs hidden entirely below this altitude
-const ARC_FULL_ALT = 2.2; // arcs full at/above (the default framing); fade down to ALT_ARC_HIDE
+// Arcs are the migration story — the lines connecting the nodes — so they stay at
+// full strength from the default framing down through moderate inspection zoom, then
+// fade and clear out only at true close-in, where street-level detail should be just
+// dots. (The old band was full at 2.2 / gone below 2.0: a razor-thin sliver at max
+// zoom-out, so arcs vanished on the first scroll click.)
+const ALT_ARC_HIDE = 0.45; // arcs hidden entirely below this altitude (true close-in)
+const ARC_FULL_ALT = 1.2; // arcs full at/above this; fade between the two
 // Auto-rotation switches off once you've zoomed in past this (gentler than arc-hide).
 const ALT_NO_ROTATE = 1.3;
+// The graticule is overview texture, like the arcs: its long great-circle sweeps read
+// as "lines" up close. Fade it over the wide->inspect band; gone by ALT_NO_ROTATE.
+const GRAT_OPACITY_FAR = 0.16; // matches makeGraticule's authored opacity
+// Country borders stay as faint context up close (you still want England's outline
+// when inspecting England) but drop from their wide-view brightness so they stop
+// reading as glowing lines once you're in.
+const BORDER_STROKE_FAR = 0.55;
+const BORDER_STROKE_NEAR = 0.18;
 
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 /** 1 when zoomed out (far), 0 when zoomed in (near). */
 const zoomT = (alt: number) => clamp01((alt - ALT_NEAR) / (ALT_FAR - ALT_NEAR));
 const bloomStrengthFor = (alt: number) => lerp(BLOOM_NEAR, BLOOM_FAR, zoomT(alt));
-const markerScale = (alt: number) => lerp(MARKER_NEAR_SCALE, MARKER_FAR_SCALE, zoomT(alt));
+const markerScale = (alt: number) => Math.min(1, Math.max(MARKER_MIN_SCALE, alt / ALT_FAR));
 const markerBright = (alt: number) => lerp(MARKER_NEAR_BRIGHT, MARKER_FAR_BRIGHT, zoomT(alt));
+const pillarScale = (alt: number) => {
+  const t = Math.min(1, alt / ALT_FAR); // continuous below ALT_NEAR, unlike zoomT
+  return Math.max(PILLAR_MIN_SCALE, t * t);
+};
 /** 1 when arcs are full, ramps to 0 by ALT_ARC_HIDE (below which arcs are hidden). */
 const arcAltFactor = (alt: number) => clamp01((alt - ALT_ARC_HIDE) / (ARC_FULL_ALT - ALT_ARC_HIDE));
+const graticuleOpacityFor = (alt: number) =>
+  GRAT_OPACITY_FAR * clamp01((alt - ALT_NO_ROTATE) / (ALT_FAR - ALT_NO_ROTATE));
+const borderStrokeFor = (alt: number) => lerp(BORDER_STROKE_NEAR, BORDER_STROKE_FAR, zoomT(alt));
 
 const ZOOM_THROTTLE_MS = 110; // marker/arc accessor refresh cadence during a zoom gesture
 const NO_ARCS: ArcDatum[] = []; // stable empty reference for the close-in (arcs hidden) state
@@ -101,6 +126,7 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
   const altRef = useRef(ALT_FAR);
   const zoomThrottle = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const bloomRef = useRef<ReturnType<typeof attachBloom>>(null);
+  const graticuleRef = useRef<ReturnType<typeof makeGraticule> | null>(null);
 
   // Auto-rotate master switch (toggled with R). rotateOnRef is read by the existing
   // interaction logic; rotateOn is just for the on-screen hint.
@@ -139,8 +165,18 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
     };
   }, []);
 
-  // Clean up the zoom throttle timer on unmount.
-  useEffect(() => () => { if (zoomThrottle.current) clearTimeout(zoomThrottle.current); }, []);
+  // Clean up the zoom throttle timer on unmount — and RESET the ref, not just clear
+  // the timer. The mount effect's pointOfView() fires onZoom immediately, scheduling a
+  // timer; StrictMode's simulated unmount then runs this cleanup between the double-
+  // invoked effects. Clearing without resetting left the ref holding a dead timer id,
+  // so the `=== undefined` guard in onZoom never scheduled again: viewAlt froze at the
+  // initial altitude and arcs never hid on zoom (the zoomed-in "lines" bug, part 1).
+  useEffect(() => () => {
+    if (zoomThrottle.current !== undefined) {
+      clearTimeout(zoomThrottle.current);
+      zoomThrottle.current = undefined;
+    }
+  }, []);
 
   useEffect(() => {
     const g = ref.current;
@@ -162,6 +198,8 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
     const atmosphere = makeAtmosphere(radius);
     scene.add(graticule);
     scene.add(atmosphere);
+    graticuleRef.current = graticule;
+    setGraticuleOpacity(graticule, graticuleOpacityFor(altRef.current));
 
     const bloom = attachBloom(globe, window.innerWidth, window.innerHeight);
     bloomRef.current = bloom;
@@ -232,6 +270,7 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
       if (resumeTimer) clearTimeout(resumeTimer);
       stopRotateRef.current = null;
       armResumeRef.current = null;
+      graticuleRef.current = null;
       scene.remove(graticule);
       scene.remove(atmosphere);
       disposeObject(graticule);
@@ -249,10 +288,12 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
     else armResumeRef.current?.();
   }, [filterActive]);
 
-  // Camera zoom -> bloom (smooth, direct) + throttled marker/arc refresh.
+  // Camera zoom -> bloom + graticule fade (smooth, direct three-object mutations, no
+  // React re-render) + throttled marker/arc/border refresh through React state.
   const onZoom = (pov: { altitude: number }) => {
     altRef.current = pov.altitude;
     if (bloomRef.current) bloomRef.current.strength = bloomStrengthFor(pov.altitude);
+    if (graticuleRef.current) setGraticuleOpacity(graticuleRef.current, graticuleOpacityFor(pov.altitude));
     if (zoomThrottle.current === undefined) {
       zoomThrottle.current = setTimeout(() => {
         zoomThrottle.current = undefined;
@@ -264,6 +305,10 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
   const arcFactor = arcAltFactor(viewAlt);
   const mScale = markerScale(viewAlt);
   const mBright = markerBright(viewAlt);
+  const pScale = pillarScale(viewAlt);
+  // Quantized so the polygon layer re-strokes ~8 times across the whole zoom range
+  // instead of on every 110ms throttle tick.
+  const borderAlpha = Math.round(borderStrokeFor(viewAlt) * 20) / 20;
 
   // While a filter is active, arcs not in the selection disappear entirely (only the
   // category's lines remain); zoom then hides whatever's left below ALT_ARC_HIDE.
@@ -272,6 +317,35 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
     [arcs, selectedRegions, filterActive],
   );
   const visibleArcs = viewAlt < ALT_ARC_HIDE ? NO_ARCS : includedArcs;
+
+  // Layer accessors, memoized on what they actually read. react-globe.gl re-applies a
+  // layer whenever an accessor prop changes identity, so inline closures made EVERY
+  // re-render (a selection click, the rotate hint, a resize) re-process points, arcs,
+  // AND polygons. With these, a layer only re-processes when its inputs change.
+  // Pillar height flattens with zoom, but the 0.003 floor keeps every dot ABOVE the
+  // country-polygon layer (0.002) at all altitudes — a fully scaled pillar would sink
+  // under the cap fill and be occluded. At pScale=1 this equals the original 0.02+w*0.6.
+  const pointAltitudeFn = useCallback((d: PointDatum) => 0.003 + (0.017 + d.weight * 0.6) * pScale, [pScale]);
+  const pointRadiusFn = useCallback((d: PointDatum) => (d.isLeaf ? 0.34 : 0.2) * mScale, [mScale]);
+  const pointColorFn = useCallback((d: PointDatum) => {
+    const included = !filterActive || (d.region != null && selectedRegions.has(d.region));
+    const bright = mBright * (included ? 1 : FILTER_DIM_MARKER); // zoom × filter
+    return mix(d.isLeaf ? theme.accentAmber : theme.accentCyan, theme.bg, 1 - bright);
+  }, [mBright, filterActive, selectedRegions]);
+  const pointLabelFn = useCallback((d: PointDatum) => d.label, []);
+  const onPointClickFn = useCallback((d: PointDatum) => onSelect(d.id), [onSelect]);
+  const arcColorFn = useCallback((d: ArcDatum) => arcEndpointColors(d, arcFactor), [arcFactor]);
+  const arcStrokeFn = useCallback((d: ArcDatum) => (d.longHaul ? 0.55 : 0.35), []);
+  const polygonCapColorFn = useCallback(() => withAlpha(theme.accentCyan, 0.05), []);
+  const polygonSideColorFn = useCallback(() => withAlpha(theme.accentCyan, 0.08), []);
+  const polygonStrokeColorFn = useMemo(() => {
+    const c = withAlpha(theme.accentCyan, borderAlpha);
+    return () => c;
+  }, [borderAlpha]);
+  const pointerEventsFilterFn = useMemo(() => (filterActive
+    ? (obj: { __globeObjType?: string }) => obj?.__globeObjType === 'globe'
+    : (obj: { __globeObjType?: string }) => obj?.__globeObjType === 'point' || obj?.__globeObjType === 'globe'),
+  [filterActive]);
 
   return (
     <>
@@ -288,10 +362,8 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
         // (the hover raycast skips them and lands on the point behind). While an isolate
         // filter is active the globe is read-only — only the bare globe stays clickable,
         // to clear. Selection is managed from the composition rows.
-        pointerEventsFilter={filterActive
-          ? (obj: { __globeObjType?: string }) => obj?.__globeObjType === 'globe'
-          : (obj: { __globeObjType?: string }) => obj?.__globeObjType === 'point' || obj?.__globeObjType === 'globe'}
-        onGlobeClick={() => onClear()}
+        pointerEventsFilter={pointerEventsFilterFn}
+        onGlobeClick={onClear}
         // Craft: no bitmap — a custom dark globe ShaderMaterial (see globeCraft.ts)
         // carries a cyan Fresnel limb; the graticule, Fresnel atmosphere shell, and
         // UnrealBloomPass are added to the scene/composer in the effect above.
@@ -299,12 +371,17 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
         showAtmosphere={false}
         // Country-border base map (modern Natural Earth 110m; on-ramp to historical
         // basemaps). Hairline cyan borders over a near-invisible cyan fill, seated just
-        // above the surface so it stays beneath the ancestor markers and arcs.
+        // above the surface so it stays beneath the ancestor markers and arcs. Stroke
+        // dims with zoom (the "lines" bug, part 2: borders at 0.55 read as glowing
+        // arcs up close) — faint context near, full brightness at the wide view.
+        // Seated 0.002 above the surface: high enough to avoid z-fighting the globe,
+        // low enough that (a) the extruded side walls don't read as thick slabs at
+        // close zoom and (b) fully flattened markers (floor 0.003) still clear the cap.
         polygonsData={WORLD_COUNTRIES}
-        polygonAltitude={0.006}
-        polygonCapColor={() => withAlpha(theme.accentCyan, 0.05)}
-        polygonSideColor={() => withAlpha(theme.accentCyan, 0.08)}
-        polygonStrokeColor={() => withAlpha(theme.accentCyan, 0.55)}
+        polygonAltitude={0.002}
+        polygonCapColor={polygonCapColorFn}
+        polygonSideColor={polygonSideColorFn}
+        polygonStrokeColor={polygonStrokeColorFn}
         polygonsTransitionDuration={0}
         // Ancestors as markers: leaves (terminal known ancestors) in amber, interior in
         // cyan; altitude scales with contribution weight. Size + brightness scale with
@@ -312,15 +389,11 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
         pointsData={points}
         pointLat="lat"
         pointLng="lng"
-        pointAltitude={(d: PointDatum) => 0.02 + d.weight * 0.6}
-        pointRadius={(d: PointDatum) => (d.isLeaf ? 0.34 : 0.2) * mScale}
-        pointColor={(d: PointDatum) => {
-          const included = !filterActive || (d.region != null && selectedRegions.has(d.region));
-          const bright = mBright * (included ? 1 : FILTER_DIM_MARKER); // zoom × filter
-          return mix(d.isLeaf ? theme.accentAmber : theme.accentCyan, theme.bg, 1 - bright);
-        }}
-        pointLabel={(d: PointDatum) => d.label}
-        onPointClick={(d: PointDatum) => onSelect(d.id)}
+        pointAltitude={pointAltitudeFn}
+        pointRadius={pointRadiusFn}
+        pointColor={pointColorFn}
+        pointLabel={pointLabelFn}
+        onPointClick={onPointClickFn}
         pointsTransitionDuration={250}
         // Migration arcs child -> parent, graded by depth + weight, faded with zoom and
         // hidden entirely up close (just dots). Excluded-category arcs are already
@@ -330,8 +403,8 @@ export function GlobeView({ points, arcs, selectedRegions, onSelect, onClear }: 
         arcStartLng="startLng"
         arcEndLat="endLat"
         arcEndLng="endLng"
-        arcColor={(d: ArcDatum) => arcEndpointColors(d, arcFactor)}
-        arcStroke={(d: ArcDatum) => (d.longHaul ? 0.55 : 0.35)}
+        arcColor={arcColorFn}
+        arcStroke={arcStrokeFn}
         arcDashLength={0.4}
         arcDashGap={0.1}
         arcDashAnimateTime={4500}

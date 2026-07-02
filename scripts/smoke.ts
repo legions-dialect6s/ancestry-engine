@@ -106,6 +106,26 @@ assert(usVariants.includes('USA') && usVariants.includes('Va'), `placeVariants r
 const czCov = cz.report.coverage;
 assert(Math.abs(czCov.resolvedWeight + czCov.unresolvedWeight + czCov.gapWeight - 1) < 1e-9, `entity-resolution tree coverage sums to 1`);
 
+// Overlap declutter: the four US ancestors share one geocode (N39/W98), so their
+// markers would stack into a single dot. buildLayers must spread them apart —
+// deterministically, bounded, with the heaviest keeping the true coordinate — while
+// leaving singleton placements (England, Scotland) exactly where the record puts them.
+const czLayers = buildLayers(cz.ancestors, cz.links, 8);
+const usPts = czLayers.points.filter((p) => p.region === 'United States');
+const usDistinct = new Set(usPts.map((p) => `${p.lat},${p.lng}`));
+assert(usPts.length === 4 && usDistinct.size === 4, `co-located markers spread to distinct positions (got ${usDistinct.size}/4)`);
+const atTrue = usPts.filter((p) => p.lat === 39 && p.lng === -98);
+assert(atTrue.length === 1, `exactly one spread marker anchors the true coordinate (got ${atTrue.length})`);
+assert(atTrue[0]!.weight === Math.max(...usPts.map((p) => p.weight)), `the heaviest member keeps the true coordinate`);
+assert(usPts.every((p) => Math.abs(p.lat - 39) <= 0.4 && Math.abs(p.lng + 98) <= 0.6), `spread offsets stay bounded (sub-city scale)`);
+const engPt = czLayers.points.find((p) => p.region === 'England');
+assert(engPt?.lat === 52.5 && engPt?.lng === -1.5, `singleton markers are not moved (got ${engPt?.lat},${engPt?.lng})`);
+
+// Arcs must land on the (spread) dot positions, not the raw coordinates.
+const posSet = new Set(full.points.map((p) => `${p.lat},${p.lng}`));
+assert(full.arcs.every((a) => posSet.has(`${a.startLat},${a.startLng}`) && posSet.has(`${a.endLat},${a.endLng}`)),
+  `every arc endpoint coincides with a marker position`);
+
 // Historical-coord sanity: an ancient place name with a wildly-off coord (Edom in
 // South Africa) drops the coord but keeps the label.
 const ancientGed = [
